@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "site-recon"
+dynamic = ["version"]
+description = "Look a website over before you scrape it: protection, the way in, platform, product data and pace in one report."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Маркіян О" }]
+keywords = ["web scraping", "reconnaissance", "anti-bot", "cloudflare", "robots.txt", "sitemap", "schema.org"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = ["httpx[http2]>=0.28", "curl_cffi>=0.16"]
+
+[project.optional-dependencies]
+# Google Chrome itself must be installed; patchright drives it
+browser = ["patchright>=1.50"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+recon = "recon.cli:main"
+
+[project.urls]
+Repository = "https://github.com/ostashmarkian/recon"
+Changelog = "https://github.com/ostashmarkian/recon/blob/main/CHANGELOG.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "recon.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # the page words recon reads are in many alphabets
+    "SIM108",  # an if/else block reads better than a long ternary here
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["recon"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src/recon"]
+check_untyped_defs = true
+warn_unused_ignores = true
+ignore_missing_imports = true

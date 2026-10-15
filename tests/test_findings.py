@@ -1,0 +1,67 @@
+"""compare(), previous_report(), and the notes a site is looked up in."""
+
+from pathlib import Path
+
+from recon.findings import compare, previous_report
+from recon.notes import notes_on, read_notes
+
+BEFORE = {
+    "protection": [],
+    "vendors": {},
+    "let_in": ["httpx-h2"],
+    "way_in": "httpx-h2",
+    "sitemap": {"addresses": 1000},
+    "product": {"jsonld": {"mpn": "A"}},
+}
+AFTER = {
+    "protection": ["in front: Cloudflare"],
+    "vendors": {"Cloudflare": ["cf-ray"]},
+    "let_in": ["curl-chrome"],
+    "way_in": "curl-chrome",
+    "sitemap": {"addresses": 1030},
+    "product": {"jsonld": {"mpn": "A"}},
+}
+
+
+def test_what_changed() -> None:
+    assert compare(BEFORE, AFTER) == [
+        "protection: none -> in front: Cloudflare",
+        "in front: none -> Cloudflare",
+        "clients let in: httpx-h2 -> curl-chrome",
+        "way in: httpx-h2 -> curl-chrome",
+    ], "a sitemap 3% larger is no change"
+    assert compare(AFTER, AFTER) == []
+
+
+def test_what_an_older_report_never_read_is_no_change() -> None:
+    assert compare(BEFORE, dict(BEFORE, sample={"traps": ["x"]}, ua_filter="refused GPTBot")) == []
+
+
+def test_another_deeper_page_is_no_change_in_protection() -> None:
+    on_x = dict(AFTER, protection=["clients turned away: httpx-h2 challenge on /, /x"])
+    on_y = dict(AFTER, protection=["clients turned away: httpx-h2 challenge on /, /y"])
+    assert compare(on_x, on_y) == []
+
+
+def test_previous_report(tmp_path: Path) -> None:
+    for name in ("shop.test-2026-10-01-0900.json", "shop.test-2026-10-15-1100.json", "other.test-2026-10-20-0900.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    found = previous_report(tmp_path, "shop.test")
+    assert found is not None and found.name == "shop.test-2026-10-15-1100.json"
+    assert previous_report(tmp_path, "none.test") is None
+
+
+def test_notes_on_a_site(tmp_path: Path) -> None:
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "shop" / "shop.md").write_text(
+        "---\ndomain: shop.test\nscraper: built\ntype: hub\n---\n", encoding="utf-8"
+    )
+    (tmp_path / "shop" / "a note.md").write_text("www.shop.test answers 403", encoding="utf-8")
+    (tmp_path / ".obsidian").mkdir()
+    (tmp_path / ".obsidian" / "x.md").write_text("shop.test", encoding="utf-8")
+    assert notes_on("www.shop.test", read_notes(tmp_path)) == {
+        "domain": "shop.test",
+        "note": {"note": "shop", "scraper": "built"},
+        "mentions": 2,
+    }
+    assert notes_on("shop.test", []) is None

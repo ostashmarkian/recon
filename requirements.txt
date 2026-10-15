@@ -1,0 +1,8 @@
+# The exact versions recon is tested with. For development, install the package instead:
+#   pip install -e ".[dev,browser]"
+# httpx over HTTP/2 needs h2.
+httpx[http2]==0.28.1
+# The Chrome, Safari and Firefox TLS clients; imported only when one is used.
+curl_cffi==0.16.3
+# Google Chrome (installed, not patchright's Chromium) past a challenge; imported only then.
+patchright==1.63.0

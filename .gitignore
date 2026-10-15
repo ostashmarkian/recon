@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+*.egg-info/
+build/
+dist/
+# what a site showed on one day
+recon-reports/
+reports/
