@@ -45,7 +45,18 @@ From an audit (2026-10-16):
   - comparisons ignore byte counts and timings.
 - The real httpx and curl_cffi clients are tested against a local server, and the
   concurrency limits and the only POST are tested.
-- 148 tests.
+
+From what scrapers met on real shops:
+
+- **The burst stops when pages shrink.** A server can fail quietly under load and
+  still answer 200: a 644-byte database error in place of a product page was seen.
+  Two answers in a step under half the smallest page of the first step (one at a
+  time) stop it, once one of them, read alone, is twice as big. A page that small
+  by itself lowers that floor instead.
+- **Myra Security** is recognised (`Server: myracloud`, its `/myracloud-blocked/` and
+  `/myracloud-captcha/` pages) and counts as protection. It lets the first requests
+  in and bans the whole IP minutes later, so the burst stays off behind it.
+- 155 tests.
 
 ## 1.0.0 - 2026-10-15
 

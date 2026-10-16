@@ -65,6 +65,21 @@ ANSWERS = [
     ),
     ("x-datadome on a 404", Answer("u", 404, {"x-datadome": "protected"}), "gone"),
     ("524", Answer("u", 524), "server-error"),
+    (
+        "Myra's ban: a 503 to /myracloud-blocked/",
+        Answer("u", 503, {"server": "myracloud", "location": "/myracloud-blocked/?r=1"}),
+        "blocked",
+    ),
+    (
+        "Myra's captcha",
+        Answer("u", 503, {"server": "myracloud"}, (), b"<title>Security Check</title><a href='/myracloud-captcha/'>"),
+        "challenge",
+    ),
+    (
+        "a plain 503 from the shop behind Myra",
+        Answer("u", 503, {"server": "myracloud"}, (), b"<title>Service Unavailable</title>"),
+        "server-error",
+    ),
 ]
 
 
@@ -80,6 +95,14 @@ def test_a_client_error_is_not_let_in() -> None:
 
 def test_judge_names_retry_after() -> None:
     assert judge(Answer("u", 429, {"retry-after": "60"}))[1] == "Retry-After 60"
+
+
+def test_myra_is_named_and_a_guard() -> None:
+    """Myra lets the first requests in and bans the whole IP minutes later: in front, it is protection."""
+    banned = Answer("u", 503, {"server": "myracloud", "location": "/myracloud-blocked/?r=1"})
+    assert judge(banned) == ("blocked", "Myra Security")
+    assert vendors_of([Answer("u", 200, {"server": "myracloud"})]) == {"Myra Security": ["server: myracloud"]}
+    assert "Myra Security" in GUARDS
 
 
 def test_vendors_of() -> None:

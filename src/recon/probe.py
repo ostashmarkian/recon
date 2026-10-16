@@ -61,8 +61,11 @@ against it: what changed since.
    each request in flight is a connection, and a firewall counting them shut
    an IP out for 29 min at 16. It stops at the first refusal, at the
    LOST_MAX-th connection lost, when answers slow to SLOW_FACTOR times the
-   first step's, or when a tenth of a step fails; after a stop it asks once
-   more RECOVER s later, to say whether the site has let go.
+   first step's, when a tenth of a step fails, or when 200s shrink: SHRUNK_MAX
+   under SHRUNK_SHARE of the first step's smallest page, and one of them as
+   much bigger read alone (a 644-byte PHP warning in place of product pages
+   was seen, the shop's database connections spent). After a stop it asks
+   once more RECOVER s later, to say whether the site has let go.
 
 Everything else goes one request at a time, PAUSE apart, or robots.txt's
 Crawl-delay apart when it asks for more (then no session test either).
@@ -750,6 +753,32 @@ class Recon:
             result["lock"] = jar < settings.LOCK_SHARE * none
         f["session"] = result
 
+    async def shrank(self, client: Client, answers: list[Answer], floor: int, at_once: int) -> tuple[str | None, int]:
+        """Whether 200s came back shrunk under load: SHRUNK_MAX or more under SHRUNK_SHARE of `floor`, and one of
+        them, read alone, at least as much bigger. (What was seen, or None; the floor, lowered to the pages read
+        alone that are that small anyway, so they are not read again.)"""
+        small = [a for a in answers if judge(a)[0] == "ok" and len(a.body) < settings.SHRUNK_SHARE * floor]
+        looked: set[str] = set()
+        while len(small) >= settings.SHRUNK_MAX and len(looked) < settings.SHRUNK_MAX:
+            a = next((b for b in small if b.url not in looked), None)
+            if a is None:
+                break
+            looked.add(a.url)
+            alone = await self.get(client, a.url)
+            self.keep(alone)
+            if judge(alone)[0] != "ok":
+                continue
+            if len(a.body) < settings.SHRUNK_SHARE * len(alone.body):
+                return (
+                    f"{len(small)} answers at {at_once} at a time were 200 but under {settings.SHRUNK_SHARE:.0%} "
+                    f"of the smallest page read one at a time: {urlsplit(a.url).path} gave {len(a.body):,} bytes, "
+                    f"{len(alone.body):,} read alone",
+                    floor,
+                )
+            floor = min(floor, len(alone.body))  # a page that small is the site's own
+            small = [b for b in small if len(b.body) < settings.SHRUNK_SHARE * floor]
+        return None, floor
+
     async def burst(self) -> None:
         f = self.f
         why = burst_blockers(f)
@@ -767,6 +796,7 @@ class Recon:
         stop: str | None = None
         stop_kind: str | None = None  # how it stopped, for comparing two reports; stop holds the numbers
         first_p50: float | None = None
+        floor: int | None = None  # bytes of the smallest page of the first step, one at a time
         http: str | None = None
         urls = itertools.cycle(self.pool)
         try:
@@ -812,9 +842,14 @@ class Recon:
                 ):
                     stop = f"answers slowed to {p50:.2f}s against {first_p50:.2f}s at {limit} at a time"
                     stop_kind = "slowed"
+                elif floor:
+                    stop, floor = await self.shrank(client, answers, floor, limit)
+                    stop_kind = "answers shrank" if stop else None
                 if stop:
                     break
                 first_p50 = p50 if first_p50 is None else first_p50
+                if floor is None:
+                    floor = min((len(a.body) for a in answers if judge(a)[0] == "ok"), default=0)
             asked = sum(s["answered"] for s in steps)
             result: dict[str, Any] = {
                 "client": self.best,

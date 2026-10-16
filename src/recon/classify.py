@@ -47,6 +47,7 @@ GUARDS = (
     "F5 BIG-IP ASM",
     "AWS WAF",
     "Vercel Firewall",
+    "Myra Security",
 )
 
 
@@ -112,6 +113,10 @@ def judge(a: Answer) -> tuple[str, str]:
             return "blocked", "Akamai"
         if ("cloudfront" in server or "x-amz-cf-id" in h) and "request blocked" in low:
             return "blocked", "AWS CloudFront"
+        # Myra answers a ban on the whole IP with a 503 and its /myracloud-blocked/ or /myracloud-captcha/ page;
+        # a plain 503 from the shop behind it is a server error
+        if "myracloud" in server and ("myracloud-" in f"{low} {a.location.lower()}" or "security check" in low):
+            return ("challenge" if "captcha" in low else "blocked"), "Myra Security"
         if any(k in low for k in ("captcha", "turnstile", "challenge-form")):
             return "challenge", "a captcha page"
     if s == 429:
@@ -189,6 +194,8 @@ def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:
             add("AWS WAF", "header or cookie")
         if "x-vercel-mitigated" in h:
             add("Vercel Firewall", "x-vercel-mitigated")
+        if "myracloud" in server:
+            add("Myra Security", "server: myracloud")
         if "x-amz-cf-id" in h or "cloudfront" in via:
             add("CloudFront (CDN)", "x-amz-cf-id or via")
         if h.get("x-served-by", "").startswith("cache-") or "fastly" in via or "x-fastly-request-id" in h:

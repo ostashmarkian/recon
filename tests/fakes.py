@@ -6,7 +6,8 @@ a category listing. It can be told to put Cloudflare in front and challenge
 every httpx client, refuse some User-Agents, serve one cookie's requests one at
 a time, answer 429 past a number of requests, drop connections, slow down with
 more at a time, speak HTTP/1.1 only, answer 200 for what is not there, wrap its
-listing, or ask for a Crawl-delay.
+listing, ask for a Crawl-delay, put Myra in front, or answer 200 with a PHP
+warning in place of its product pages when too many are asked at once.
 """
 
 from __future__ import annotations
@@ -43,6 +44,11 @@ PRODUCT = (
     "</body></html>"
 )
 CHALLENGE = "<html><head><title>Just a moment...</title></head></html>"
+# what an OpenCart shop served with status 200 once its database connections were spent
+PHP_WARNING = (
+    b"<b>Warning</b>: mysqli::mysqli(): (HY000/1226): User 'shop' has exceeded the 'max_user_connections'"
+    b" resource (current value: 30)"
+)
 
 
 def sitemap_index() -> bytes:
@@ -88,6 +94,7 @@ class FakeSite:
         robots_moved=False,
         home_extra="",
         home_captcha=False,
+        shrink_over=None,
     ):
         self.guard, self.refuse_uas, self.lock, self.limit = guard, refuse_uas, lock, limit
         self.drop_after, self.slow, self.http, self.disallow = drop_after, slow, http, disallow
@@ -97,6 +104,7 @@ class FakeSite:
         self.robots_status, self.robots_moved = robots_status, robots_moved  # robots.txt failing, or redirected
         self.home_extra = home_extra  # more HTML at the end of the home page
         self.home_captcha = home_captcha  # the home page redirects to a captcha page
+        self.shrink_over = shrink_over  # more product pages at once than this: a 200 with a PHP warning
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
         self.most_in_flight = 0  # the most requests out at once
@@ -105,7 +113,10 @@ class FakeSite:
 
     def answer(self, client: FakeClient, url: str, headers: dict) -> Answer:
         path, _, query = (url.removeprefix(BASE) or "/").partition("?")
-        h = {"server": "cloudflare", "cf-ray": "8f-WAW"} if self.guard else {"server": "nginx"}
+        if self.guard == "myra":
+            h = {"server": "myracloud"}
+        else:
+            h = {"server": "cloudflare", "cf-ray": "8f-WAW"} if self.guard else {"server": "nginx"}
         ua = client.ua if client.ua is not None else settings.CHROME_UA
         if self.guard == "cloudflare-tls" and client.kind.startswith("httpx") and path != "/robots.txt":
             return Answer(url, 403, {**h, "cf-mitigated": "challenge"}, (), CHALLENGE.encode(), 0.01, http=self.http)
@@ -168,6 +179,7 @@ class FakeClient:
             async with site.session:
                 await asyncio.sleep(0.05)
         site.in_flight += 1
+        crowd = site.in_flight
         site.most_in_flight = max(site.most_in_flight, site.in_flight)
         if data is not None:
             site.posts.append(url.removeprefix(BASE))
@@ -181,6 +193,8 @@ class FakeClient:
                 return Answer(url, 429, {"retry-after": "60"}, (), b"", 0.01, http=site.http)
             if site.drop_after is not None and self.pages > site.drop_after:
                 return Answer(url, error="RemoteProtocolError: Server disconnected without sending a response.")
+            if site.shrink_over is not None and crowd > site.shrink_over:
+                return Answer(url, 200, {"server": "nginx"}, (), PHP_WARNING, 0.01, http=site.http)
         a = site.answer(self, url, headers or {})
         a.seconds = asyncio.get_running_loop().time() - began
         if self.cookies and a.cookies:

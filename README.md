@@ -76,7 +76,7 @@ product page read, each not-found probe. See the full report:
   Firefox. Run on the home page, a product page and robots.txt.
 - 13 User-Agents, from Chrome to `python-requests`, `Scrapy` and AI crawlers.
 - Detects Cloudflare, Akamai, Imperva, DataDome, HUMAN, Sucuri, Kasada, F5,
-  AWS WAF, Vercel and common CDNs from headers, cookies and challenge pages.
+  AWS WAF, Vercel, Myra and common CDNs from headers, cookies and challenge pages.
 - When something is challenged, opens real Chrome (via patchright) and checks
   whether its `cf_clearance` cookie lets the other clients in.
 
@@ -84,7 +84,8 @@ product page read, each not-found probe. See the full report:
 - Session lock test: is the site slower with a cookie jar than without one?
   Some servers handle one session's requests one at a time.
 - Burst test: 1, 2, 4, 8, 16 requests at a time, only on unprotected sites (see
-  [Responsible use](#responsible-use)). Stops at the first sign of strain.
+  [Responsible use](#responsible-use)). Stops at the first sign of strain, a
+  quiet one too: pages that still answer 200 but shrink to an error message.
 
 **Platform and catalogue**
 - Recognises 25 platforms, among them Shopify, WooCommerce, Magento,
@@ -215,8 +216,11 @@ or public sites whose terms permit it. It is careful by default:
 - any refusal, in any step, keeps the burst off;
 - **the burst runs only when nothing protects the site.** Any anti-bot service
   in front, a browser-like client turned away, or a Crawl-delay turns it off.
-  It stops at the first refusal, dropped connection or slowdown, and waits
-  30 s before one last check that the site has let go;
+  It stops at the first refusal, dropped connection or slowdown, and at
+  pages that answer 200 but shrink: under half the smallest page read one at a
+  time, and twice as big when read alone (a server failing quietly, as a
+  644-byte database error in place of a product page). Then it waits 30 s
+  before one last check that the site has let go;
 - no captcha solving, no logins.
 
 The client matrix tells you what a site lets through. It is not a way past a
@@ -233,7 +237,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 148 tests, offline, ~70 s
+pytest                                       # 155 tests, offline, ~70 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```
@@ -242,7 +246,7 @@ The tests never touch the network. `tests/fakes.py` holds `FakeSite`, a
 stand-in shop with a sitemap, product pages and a listing. It can play many
 sites: Cloudflare challenging httpx, User-Agent filters, a session lock, a
 rate limit, dropped connections, a slowing server, soft 404s, a wrapping
-listing or a Crawl-delay.
+listing, a Crawl-delay, Myra in front, or 200s that shrink under load.
 
 The real `Recon` runs against it. Each safety rule was checked by breaking the
 code on purpose and watching a test fail. CI runs ruff, mypy and the tests on

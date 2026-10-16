@@ -118,6 +118,13 @@ SLOW_FLOOR = 1.0  # s: a slower median that is still under it is no slowdown
 FAILED_SHARE = 0.1
 
 
+# A 200 under this share of the smallest page of the first step (one at a time) has shrunk: a server failing
+# quietly under load, as a PHP warning of 644 bytes in place of a 16 KB product page. SHRUNK_MAX of them in a
+# step, and up to as many read alone, one at a time, to tell them from pages that small anyway
+SHRUNK_SHARE = 0.5
+SHRUNK_MAX = 2
+
+
 RECOVER = 30
 
 

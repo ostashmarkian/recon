@@ -1,10 +1,13 @@
 """Whole runs of recon against a FakeSite: what it found, what it asked, what the report says."""
 
+import asyncio
+
 import pytest
-from fakes import BASE, CHALLENGE, FakeBrowser, FakeSite, scan
+from fakes import BASE, CHALLENGE, FakeBrowser, FakeClient, FakeSite, scan
 
 from recon import settings
 from recon.clients import Answer
+from recon.probe import Recon
 
 
 @pytest.fixture(scope="module")
@@ -140,6 +143,14 @@ def test_guard_letting_every_probe_in():
     assert (f["level"]["level"], f["level"]["label"]) == (1, "a service in front, nothing refused")
 
 
+def test_myra_in_front_keeps_the_burst_off():
+    """Every probe let in, as Myra lets the first requests in before it bans the IP."""
+    f, _, _ = scan(FakeSite(guard="myra"))
+    assert f["vendors"] == {"Myra Security": ["server: myracloud"]}
+    assert f["burst"] == {"skipped": ["in front: Myra Security"]}
+    assert f["level"]["level"] == 1
+
+
 def test_user_agent_filter_is_not_protection():
     f, text, _ = scan(FakeSite(refuse_uas=("GPTBot", "ClaudeBot")))
     assert f["ua_filter"] == "refused GPTBot, ClaudeBot"
@@ -195,6 +206,31 @@ class TestBurstStops:
         monkeypatch.setattr(settings, "SLOW_FLOOR", 0.0)
         burst = scan(FakeSite(slow=True))[0]["burst"]
         assert "slowed" in (burst["stop"] or "")
+
+    def test_when_200s_shrink(self):
+        """A shop failing quietly under load: 200s with a PHP warning in place of its product pages."""
+        site = FakeSite(shrink_over=4)
+        f, text, _ = scan(site)
+        burst = f["burst"]
+        assert [s["at_once"] for s in burst["steps"]] == [1, 2, 4, 8]
+        assert burst["stop_kind"] == "answers shrank"
+        said = "at 8 at a time were 200 but under 50% of the smallest page read one at a time: /product/"
+        assert said in burst["stop"]
+        assert burst["stop"].endswith(" read alone") and "stopped after" in text
+        assert burst["after"]["verdict"] == "ok"
+        assert f["requests"] == len(site.asked), "the page read alone counted"
+
+    def test_a_page_small_by_itself_has_not_shrunk(self):
+        """Under half the first step's smallest page, but as small read alone: the site's own, nothing stops."""
+        site = FakeSite(soft404=True)  # any other page: a short 200
+        client = FakeClient(site, "httpx-h2", None, False)
+        recon = Recon(BASE, make=lambda kind, ua=None, cookies=False: client, pause=0)
+        short = asyncio.run(client.fetch(f"{BASE}/about/"))
+        floor = len(asyncio.run(client.fetch(f"{BASE}/product/1/")).body)
+        assert len(short.body) < settings.SHRUNK_SHARE * floor, "a small page here"
+        said, lowered = asyncio.run(recon.shrank(client, [short, short], floor, 8))
+        assert (said, lowered) == (None, len(short.body)), "the floor drops to it, so it is not read again"
+        assert [p for _, _, p in site.asked].count("/about/") == 2, "read alone once"
 
     def test_at_8_over_http1(self):
         site = FakeSite(http="h1")
