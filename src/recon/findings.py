@@ -36,6 +36,9 @@ def summary(a: Answer) -> dict[str, Any]:
     }
 
 
+# the "why" of a refusal that names who refused; a plain 403 gives a page title instead
+KNOWN_REFUSERS = {"AWS CloudFront", "a captcha page"} | set(GUARDS)
+
 LEVELS = (
     "none seen",
     "a service in front, nothing refused",
@@ -81,10 +84,12 @@ def protection_level(f: Findings) -> dict[str, Any]:
     vendors = f.get("vendors") or {}
     rows = f.get("clients") or []
     let_in = f.get("let_in") or []
-    turned = list(dict.fromkeys(r["client"] for r in rows if r["verdict"] in (*REFUSALS, "dropped")))
+    # turned away: a client not let in, as let_in counts, on the home page and the deeper page
+    turned = [k for k in dict.fromkeys(r["client"] for r in rows) if k not in let_in]
     browser = f.get("browser") or {}
     guards = guards_named(f)
-    refusers = [w for w, _ in Counter(r["why"] for r in rows if r["verdict"] in REFUSALS and r["why"]).most_common()]
+    named = Counter(r["why"] for r in rows if r["verdict"] in REFUSALS and r["why"] in KNOWN_REFUSERS)
+    refusers = [w for w, _ in named.most_common()]  # services only: a page's title is no one's name
     who = ", ".join(refusers) or "; ".join(guards) or "The site"
     if not let_in:
         level = 4 if browser.get("passed") else 5
@@ -130,13 +135,24 @@ def protection_level(f: Findings) -> dict[str, Any]:
             tail = " The refusals were no challenges, so no browser was tried."
         said = f"{who} lets no client in." + tail
 
+    label = LEVELS[level]
+    under_load = []
+    if (f.get("session") or {}).get("refused"):
+        under_load.append("the session test, 4 at a time")
+    if f.get("refused_elsewhere"):
+        under_load.append("later steps: " + ", ".join(f.get("refused_elsewhere") or {}))
+    if under_load:
+        said += f" Refused under load in {'; '.join(under_load)}: a rate limit."
+        if level == 0:
+            level, label = 1, "a rate limit"
+
     if guards or level >= 2:
         unseen = "limits over a long session, behaviour scoring, the IP's reputation"
     elif (f.get("burst") or {}).get("steps") and not (f.get("burst") or {}).get("stop"):
         unseen = "a limiter that allows a larger burst than recon's"
     else:
         unseen = "limits past the pace recon kept"
-    return {"level": level, "label": LEVELS[level], "said": said, "unseen": unseen}
+    return {"level": level, "label": label, "said": said, "unseen": unseen}
 
 
 def protection(f: Findings) -> list[str]:
@@ -228,6 +244,11 @@ def present(f: Findings) -> list[str]:
     )
 
 
+def not_found_kinds(f: Findings) -> list[str]:
+    """What each not-found probe got, without its bytes and titles, which change from run to run."""
+    return [f"{r['probe']}: {r['verdict']}" for r in (f.get("not_found") or {}).get("rows") or []]
+
+
 def compare(prev: Findings, f: Findings) -> list[str]:
     """What changed since an earlier report of the same shop, in what both hold."""
     changes = []
@@ -264,11 +285,12 @@ def compare(prev: Findings, f: Findings) -> list[str]:
     note("product data", present(prev), present(f), "product")
     note(
         "not-found pages",
-        (prev.get("not_found") or {}).get("findings"),
-        (f.get("not_found") or {}).get("findings"),
+        not_found_kinds(prev),
+        not_found_kinds(f),
         "not_found",
     )
-    note("burst", (prev.get("burst") or {}).get("stop"), (f.get("burst") or {}).get("stop"))
+    if "stop_kind" in (prev.get("burst") or {}):  # how it stopped, not its timings
+        note("burst", prev["burst"]["stop_kind"], (f.get("burst") or {}).get("stop_kind"))
     note(
         "product sample traps", (prev.get("sample") or {}).get("traps"), (f.get("sample") or {}).get("traps"), "sample"
     )

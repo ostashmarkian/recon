@@ -312,8 +312,15 @@ def report(f: Findings) -> str:
             out.append("- API paths: " + ", ".join(f"`{e}`" for e in src["endpoints"]))
         out.append("")
 
+    if f.get("errors"):
+        out += ["## Errors", "", "Steps that broke; the report holds what the others found.", ""]
+        out += [f"- {e['step']}: {e['error']}" for e in f["errors"]]
+        out.append("")
+
     home = f.get("home_answer") or {}
     out += ["## Site", ""]
+    if f.get("home_redirect"):
+        out.append(f"- The home page redirects {f['home_redirect']}")
     out.append(f"- Home: {cell(home)}" if home else "- Home: -")
     out.append("- In front: " + ("; ".join(f"{v} ({', '.join(e)})" for v, e in vendors.items()) or "nothing seen"))
     for p in plats:

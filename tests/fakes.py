@@ -87,6 +87,7 @@ class FakeSite:
         robots_status=200,
         robots_moved=False,
         home_extra="",
+        home_captcha=False,
     ):
         self.guard, self.refuse_uas, self.lock, self.limit = guard, refuse_uas, lock, limit
         self.drop_after, self.slow, self.http, self.disallow = drop_after, slow, http, disallow
@@ -95,6 +96,7 @@ class FakeSite:
         self.crawl_delay, self.rate = crawl_delay, rate
         self.robots_status, self.robots_moved = robots_status, robots_moved  # robots.txt failing, or redirected
         self.home_extra = home_extra  # more HTML at the end of the home page
+        self.home_captcha = home_captcha  # the home page redirects to a captcha page
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
         self.session = asyncio.Lock() if lock else None
@@ -107,6 +109,10 @@ class FakeSite:
             return Answer(url, 403, {**h, "cf-mitigated": "challenge"}, (), CHALLENGE.encode(), 0.01, http=self.http)
         if any(name in ua for name in self.refuse_uas):
             return Answer(url, 403, h, (), b"<title>Forbidden</title>", 0.01, http=self.http)
+        if path == "/" and self.home_captcha:
+            return Answer(url, 302, {**h, "location": "/captcha/?from=/"}, (), b"", 0.01, http=self.http)
+        if path == "/captcha/":
+            return Answer(url, 200, h, (), b"<html><title>Are you a robot?</title></html>", 0.01, http=self.http)
         if path == "/robots.txt" and self.robots_moved:
             return Answer(url, 301, {**h, "location": f"{BASE}/real-robots.txt"}, (), b"", 0.01, http=self.http)
         if path == "/robots.txt" and self.robots_status != 200:

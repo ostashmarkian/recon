@@ -35,7 +35,8 @@ PRODUCT_HINT = re.compile(
 )
 
 
-HREF = re.compile(r"""href\s*=\s*["']([^"'#]+)""", re.I)
+# links a visitor follows: <a href>, not <link> (stylesheets, the WordPress shortlink ?p=123, canonicals)
+HREF = re.compile(r"""<a\b[^<>]*?\bhref\s*=\s*["']([^"']*)["']""", re.I)
 
 
 TITLE = re.compile(r"<title[^<>]*>([^<]*)</title>", re.I)
@@ -191,29 +192,36 @@ def read_sitemap(body: bytes) -> tuple[str, list[str], list[str]]:
     if body[:2] == b"\x1f\x8b":
         body = gunzip(body, settings.SITEMAP_MOST)
     text = body.decode("utf-8", "replace")
-    return ("index" if "<sitemapindex" in text[:2000] else "urls"), LOC.findall(text), LASTMOD.findall(text)
+    locs = [entities.unescape(loc) for loc in LOC.findall(text)]  # "&amp;" in a <loc> is "&"
+    return ("index" if "<sitemapindex" in text[:2000] else "urls"), locs, LASTMOD.findall(text)
 
 
 def short(value: Any, most: int = 60) -> str | None:
     return None if value in (None, "") else " ".join(str(value).split())[:most]
 
 
+LD_DEPTH = 64  # levels of JSON-LD nesting read; a page nested deeper is not a product page
+
+
 def ld_products(html: str) -> list[dict[str, Any]]:
     """The schema.org Products of a page's JSON-LD blocks, @graph and nesting opened."""
     found = []
 
-    def walk(node: Any) -> None:
-        if isinstance(node, list):
-            for item in node:
-                walk(item)
-        elif isinstance(node, dict):
-            kinds = node.get("@type")
-            kinds = kinds if isinstance(kinds, list) else [kinds]
-            if any(isinstance(k, str) and (k.endswith("Product") or k == "ProductGroup") for k in kinds):
-                found.append(node)
-            for value in node.values():
-                if isinstance(value, (list, dict)):
-                    walk(value)
+    def walk(root: Any) -> None:
+        """Every dict in `root`, in order, by a stack: no recursion, LD_DEPTH levels at most."""
+        stack = [(root, 0)]
+        while stack:
+            node, depth = stack.pop()
+            if depth > LD_DEPTH:
+                continue
+            if isinstance(node, list):
+                stack.extend((item, depth + 1) for item in reversed(node))
+            elif isinstance(node, dict):
+                kinds = node.get("@type")
+                kinds = kinds if isinstance(kinds, list) else [kinds]
+                if any(isinstance(k, str) and (k.endswith("Product") or k == "ProductGroup") for k in kinds):
+                    found.append(node)
+                stack.extend((v, depth + 1) for v in reversed(list(node.values())) if isinstance(v, (list, dict)))
 
     scripts = blocks(html, ("script",))
     lds = [
@@ -224,10 +232,10 @@ def ld_products(html: str) -> list[dict[str, Any]]:
     for block in lds:
         try:
             walk(json.loads(block.strip()))
-        except ValueError:
+        except (ValueError, RecursionError):
             try:  # raw line breaks inside its strings, as some themes write them
                 walk(json.loads(re.sub(r"[\x00-\x1f]+", " ", block)))
-            except ValueError:
+            except (ValueError, RecursionError):  # nesting deeper than json can read
                 continue
     return found
 
@@ -378,7 +386,8 @@ def freshness(answers: Iterable[Answer | None]) -> dict[str, Any]:
             ages.append(int(h["age"].strip()))
         if h.get("last-modified"):
             with contextlib.suppress(TypeError, ValueError):
-                modified.append(parsedate_to_datetime(h["last-modified"]))
+                when = parsedate_to_datetime(h["last-modified"])
+                modified.append(when if when.tzinfo else when.replace(tzinfo=UTC))  # no zone written: GMT
         if h.get("cache-control"):
             controls[h["cache-control"][:60]] += 1
     oldest = min(modified) if modified else None

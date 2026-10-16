@@ -57,6 +57,20 @@ def stem_of(home: str) -> str:
     return re.sub(r"[^a-z0-9.-]", "_", host.lower()).strip("._")[:100] or "site"
 
 
+def write(path: Path, text: str) -> None:
+    """`text` as UTF-8; what UTF-8 cannot hold (a lone surrogate from a page's JSON-LD) is replaced."""
+    path.write_text(text, encoding="utf-8", errors="replace")
+
+
+def changes_since(earlier: dict[str, Any], findings: dict[str, Any]) -> list[str] | None:
+    """compare(), or None when the earlier report is of another shape."""
+    try:
+        return compare(earlier, findings)
+    except (AttributeError, KeyError, TypeError, ValueError) as e:
+        log.warning("the earlier report could not be compared (%s: %s)", type(e).__name__, e)
+        return None
+
+
 def load_report(path: Path) -> dict[str, Any] | None:
     """An earlier report's findings, or None when the file is not one."""
     try:
@@ -94,17 +108,18 @@ def main(argv: list[str] | None = None) -> int:
         if earlier is None:
             log.warning("%s is not a recon report: no comparison", source)
     if earlier is not None and source:
-        findings["compared_with"] = {"file": Path(source).name, "began": earlier.get("began")}
-        findings["changes"] = compare(earlier, findings)
-    text = report(findings)
+        changes = changes_since(earlier, findings)
+        if changes is not None:
+            findings["compared_with"] = {"file": Path(source).name, "began": earlier.get("began")}
+            findings["changes"] = changes
     args.out.mkdir(parents=True, exist_ok=True)
     stem = f"{host}-{datetime.now():%Y-%m-%d-%H%M}"
-    (args.out / f"{stem}.md").write_text(text, encoding="utf-8")
-    (args.out / f"{stem}.json").write_text(
-        json.dumps(findings, indent=1, ensure_ascii=False, default=str), encoding="utf-8"
-    )
+    # the .json first: if the report itself broke, the findings are on disk all the same
+    write(args.out / f"{stem}.json", json.dumps(findings, indent=1, ensure_ascii=False, default=str))
+    text = report(findings)
+    write(args.out / f"{stem}.md", text)
     if isinstance(sys.stdout, io.TextIOWrapper):  # a Windows console is cp1251 or the like
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     print(text)
     log.info("report: %s", args.out / f"{stem}.md")
     return 0

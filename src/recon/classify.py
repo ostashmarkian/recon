@@ -4,6 +4,7 @@ it - and which services stand in front of a site."""
 import html as entities
 import re
 from collections.abc import Iterable
+from urllib.parse import urlsplit
 
 from .clients import Answer
 from .pages import TITLE
@@ -52,6 +53,13 @@ GUARDS = (
 F5_COOKIE = re.compile(r"TS[0-9a-f]{6,}$")
 
 
+# A redirect that is a block: a path segment naming one, as /CustomError/error403.html or /captcha/?from=...
+BLOCK_REDIRECT = re.compile(
+    r"(?:^|[/_.?&=-])(?:error[-_]?)?(?:403|blocked|captcha|access[-_]?denied|forbidden|challenge)(?:[/_.?&=-]|$)",
+    re.I,
+)
+
+
 def title_of(a: Answer) -> str:
     found = TITLE.search(a.head)
     return " ".join(found.group(1).split())[:80] if found else ""
@@ -77,9 +85,10 @@ def judge(a: Answer) -> tuple[str, str]:
         return ("challenge" if action in ("captcha", "challenge") else "blocked"), "AWS WAF"
     if s != 200 and any(k.startswith("x-kpsdk") for k in h):
         return "challenge", "Kasada"
-    if "captcha-delivery.com" in low or (s != 200 and "x-datadome" in h):
+    if "captcha-delivery.com" in low or (s in (403, 429) and "x-datadome" in h):
         return "challenge", "DataDome"
-    if "_incapsula_resource" in low or "incapsula incident" in low:
+    # Imperva puts its script on normal pages too: a challenge is a small page holding little but it
+    if "incapsula incident" in low or ("_incapsula_resource" in low and len(a.body) < 10_000):
         return ("challenge" if s == 200 else "blocked"), "Imperva"
     if "px-captcha" in low or (s == 403 and "_pxhd" in a.cookies):
         return "challenge", "HUMAN (PerimeterX)"
@@ -110,19 +119,28 @@ def judge(a: Answer) -> tuple[str, str]:
     if s in (401, 403, 406, 451):
         return "refused", title_of(a) or server
     if 300 <= s < 400:
-        where = a.location.lower()
-        if any(k in where for k in ("403", "block", "captcha", "denied", "forbidden", "challenge")):
+        try:  # the path and query only: a host named "...block..." or a product /14032/ is no block
+            parts = urlsplit(a.location)
+            where = f"{parts.path}?{parts.query}"
+        except ValueError:
+            where = a.location
+        if BLOCK_REDIRECT.search(where):
             return "blocked", f"a redirect to {a.location}"
         return "redirect", a.location
     if s in (404, 410):
         return "gone", ""
+    if s == 408:
+        return "error", "408 Request Timeout"
+    if 400 <= s < 500:
+        return "client-error", title_of(a) or server
     if s >= 500:
         return "server-error", ""
     return "ok", ""
 
 
 def passes(verdict: str) -> bool:
-    return verdict not in REFUSALS + LOST
+    """Let in: an answer that is no refusal, no loss and no 4xx the client caused."""
+    return verdict not in (*REFUSALS, *LOST, "client-error")
 
 
 def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:

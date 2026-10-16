@@ -7,6 +7,7 @@ from fakes import BASE, PRODUCT, page, sitemap_index, urlset
 
 from recon.clients import Answer
 from recon.pages import (
+    HREF,
     PRODUCT_HINT,
     drawn,
     freshness,
@@ -25,6 +26,34 @@ def test_sitemap_index() -> None:
 def test_gzipped_urlset() -> None:
     kind, locs, lastmods = read_sitemap(gzip.compress(urlset([1, 2])))
     assert (kind, len(locs), lastmods) == ("urls", 2, ["2026-10-02", "2026-10-03"])
+
+
+def test_an_escaped_ampersand_in_a_sitemap_loc() -> None:
+    _, locs, _ = read_sitemap(b"<urlset><url><loc>https://s.test/i.php?a=1&amp;id=42</loc></url></urlset>")
+    assert locs == ["https://s.test/i.php?a=1&id=42"]
+
+
+def test_links_are_anchors_not_link_tags() -> None:
+    html = (
+        '<link rel="shortlink" href="/?p=12"><link rel="stylesheet" href="/s.css"><a class="x" href="/c/?page=2">2</a>'
+    )
+    assert HREF.findall(html) == ["/c/?page=2"]
+    assert listing_page(["/?p=12"]) is not None, "a ?p= address still reads as a page number"
+
+
+def test_a_json_ld_nested_too_deep_is_no_product() -> None:
+    body = '<script type="application/ld+json">' + "[" * 5000 + "]" * 5000 + "</script>"
+    assert product_data(Answer("u", 200, {}, (), body.encode()))["found"] is False
+
+
+def test_last_modified_with_and_without_a_zone() -> None:
+    fresh = freshness(
+        [
+            page("x", **{"last-modified": "Mon, 13 Oct 2025 10:00:00 GMT"}),
+            page("y", **{"last-modified": "Mon, 13 Oct 2025 09:00:00"}),
+        ]
+    )
+    assert fresh["last_modified_oldest"].startswith("2025-10-13T09:00:00")
 
 
 def test_digits_only_product_address() -> None:

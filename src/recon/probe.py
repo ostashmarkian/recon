@@ -73,6 +73,7 @@ h2 0.21s".
 """
 
 import asyncio
+import html as entities
 import itertools
 import logging
 import random
@@ -124,6 +125,28 @@ from .sample import page_record, sample_findings
 log = logging.getLogger(__name__)
 
 
+def looks_like_sitemap(body: bytes) -> bool:
+    """A sitemap file: gzip, or XML with <urlset> or <sitemapindex> near its start."""
+    start = body[:4000].lower()
+    return body[:2] == b"\x1f\x8b" or b"<urlset" in start or b"<sitemapindex" in start
+
+
+def join(base: str, href: str) -> str | None:
+    """`href` read against `base`, entities decoded; None for an address Python cannot parse."""
+    try:
+        return urljoin(base, entities.unescape(href).strip())
+    except ValueError:
+        return None
+
+
+def same_host(a: str, b: str) -> bool:
+    """Two addresses on one site: the same host, "www." or not."""
+    try:
+        return (urlsplit(a).hostname or "").removeprefix("www.") == (urlsplit(b).hostname or "").removeprefix("www.")
+    except ValueError:
+        return False
+
+
 async def fetch_within(
     client: Client, url: str, headers: dict[str, str] | None = None, data: bytes | None = None
 ) -> Answer:
@@ -172,6 +195,21 @@ class Recon:
         self.step: str | None = None  # the step under way, for refusals seen in it
         self.refused: dict[str, dict[str, int]] = {s: {} for s in WATCHED_STEPS}
         self.stopped: str | None = None  # why the run stopped early
+        parts = urlsplit(url)
+        self.scheme, self.host = parts.scheme, (parts.hostname or "").lower()
+        self.origin = f"{self.scheme}://{parts.netloc}"
+        self.home, self.home_answer = url, Answer(url, error="not asked")
+        self.robots, self.robots_text = Robots(), ""
+        self.seen: list[Answer] = []
+        self.deep: str | None = None
+        self.deep_answer: Answer | None = None
+        self.product_answer: Answer | None = None
+        self.sample_answers: list[Answer] = []
+        self.links: list[str] = []
+        self.products: list[str] = []
+        self.pool: list[str] = []
+        self.listed: list[str] = []
+        self.best: str | None = None
         self.f: Findings = {"url": url, "began": datetime.now().astimezone().isoformat(timespec="seconds")}
 
     async def get(
@@ -197,10 +235,15 @@ class Recon:
         so a run of 450 answers on 1 MB pages does not hold half a gigabyte."""
         self.seen.extend(replace(a, body=a.body[: settings.HEAD]) for a in answers)
 
-    def same_site(self, url: str) -> str | None:
+    def same_site(self, url: str | None) -> str | None:
         """The address on the home page's host, or None: elsewhere, an asset,
-        a cart or account page, or one robots.txt keeps from everyone."""
-        parts = urlsplit(url)
+        a cart or account page, one robots.txt keeps from everyone, or not an address."""
+        if not url:
+            return None
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return None
         host = parts.netloc.lower()
         if parts.scheme not in ("http", "https") or host.removeprefix("www.") != self.host.removeprefix("www."):
             return None
@@ -212,45 +255,68 @@ class Recon:
     async def run(self) -> Findings:
         began = time.monotonic()
         f = self.f
-        scout = self.make("curl-chrome")
         try:
-            await self.look_around(scout)
-        finally:
-            await scout.aclose()
-        if self.stopped:
-            return self.stop_early(began)
-        await self.clients()
-        await self.user_agents()
-        await self.real_browser()
-        for step, do in (
-            ("platform", self.platform),
-            ("product", self.product),
-            ("not_found", self.not_found),
-            ("sample", self.product_sample),
-        ):
-            self.step = step
-            await do()
-        self.step = None
-        f["refused_elsewhere"] = {step: got for step, got in self.refused.items() if got}
-        f["sources"] = sources_of([a for a in (self.home_answer, self.product_answer) if a])
-        f["rendering"] = {
-            name: drawn(a)
-            for name, a in (("home", self.home_answer), ("product", self.product_answer))
-            if a and judge(a)[0] == "ok"
-        }
-        f["freshness"] = freshness([self.home_answer, *self.sample_answers])
-        await self.session_lock()
-        f["vendors"] = vendors_of(self.seen)
-        f["ua_filter"] = ua_filter(f)
-        await self.burst()
-        f["protection"] = protection(f)
-        f["level"] = protection_level(f)
-        f["way_in"] = way_in(f)
-        f["rate_headers"] = rate_headers(self.seen)
-        f["notes"] = notes_on(self.host, self.notes)
-        f["requests"] = self.requests
-        f["seconds"] = round(time.monotonic() - began, 1)
+            scout = self.make("curl-chrome")
+            try:
+                await self.isolated("look_around", lambda: self.look_around(scout))
+            finally:
+                await scout.aclose()
+            if self.stopped:
+                return self.stop_early(began)
+            for name, do in (
+                ("clients", self.clients),
+                ("user_agents", self.user_agents),
+                ("browser", self.real_browser),
+                ("platform", self.platform),
+                ("product", self.product),
+                ("not_found", self.not_found),
+                ("sample", self.product_sample),
+            ):
+                await self.isolated(name, do)
+            f["refused_elsewhere"] = {step: got for step, got in self.refused.items() if got}
+            self.computed("sources", lambda: sources_of([a for a in (self.home_answer, self.product_answer) if a]))
+            self.computed(
+                "rendering",
+                lambda: {
+                    name: drawn(a)
+                    for name, a in (("home", self.home_answer), ("product", self.product_answer))
+                    if a and judge(a)[0] == "ok"
+                },
+            )
+            self.computed("freshness", lambda: freshness([self.home_answer, *self.sample_answers]))
+            await self.isolated("session_lock", self.session_lock)
+            self.computed("vendors", lambda: vendors_of(self.seen))
+            self.computed("ua_filter", lambda: ua_filter(f))
+            await self.isolated("burst", self.burst)
+        finally:  # whatever broke, the findings close with what the report needs
+            self.computed("protection", lambda: protection(f), [])
+            self.computed("level", lambda: protection_level(f))
+            self.computed("way_in", lambda: way_in(f), "unknown: the run broke before it was found")
+            self.computed("rate_headers", lambda: rate_headers(self.seen))
+            self.computed("notes", lambda: notes_on(self.host, self.notes))
+            f["requests"] = self.requests
+            f["seconds"] = round(time.monotonic() - began, 1)
         return f
+
+    async def isolated(self, name: str, do: Callable[[], Awaitable[None]]) -> None:
+        """One step; its failure is written down in the findings, and the run goes on."""
+        self.step = name if name in WATCHED_STEPS else None
+        try:
+            await do()
+        except Exception as e:
+            log.exception("%s failed", name)
+            self.f.setdefault("errors", []).append({"step": name, "error": f"{type(e).__name__}: {e}"[:300]})
+        finally:
+            self.step = None
+
+    def computed(self, key: str, make: Callable[[], Any], fallback: Any = None) -> None:
+        """f[key] = make(); its failure is written down, and f[key] is `fallback`."""
+        try:
+            self.f[key] = make()
+        except Exception as e:
+            log.exception("%s failed", key)
+            self.f.setdefault("errors", []).append({"step": key, "error": f"{type(e).__name__}: {e}"[:300]})
+            self.f[key] = fallback
 
     def stop_early(self, began: float) -> Findings:
         """The findings of a run that stopped after robots.txt: what it saw, and why it stopped."""
@@ -283,17 +349,21 @@ class Recon:
         """The home page, its redirects followed; robots.txt; the sitemaps;
         the deeper page; the pool of pages for the session test and the burst."""
         f, url = self.f, self.start
-        self.seen: list[Answer] = []
-        self.deep_answer: Answer | None = None
-        self.product_answer: Answer | None = None
-        self.sample_answers: list[Answer] = []
+        self.seen = []
+        self.deep_answer = None
+        self.product_answer = None
+        self.sample_answers = []
         for _ in range(settings.REDIRECTS + 1):
             home = await self.get(scout, url)
             self.keep(home)
-            if home.status and 300 <= home.status < 400 and home.location:
-                url = urljoin(url, home.location)
-                continue
-            break
+            if not (home.status and 300 <= home.status < 400 and home.location):
+                break
+            hop = join(url, home.location)
+            if hop is None or judge(home)[0] == "blocked" or not same_host(hop, url):
+                why = "a block" if judge(home)[0] == "blocked" else "another site" if hop else "not an address"
+                f["home_redirect"] = f"{home.status} to {home.location}: not followed ({why})"
+                break
+            url = hop
         self.home, self.home_answer = url, home
         parts = urlsplit(url)
         self.scheme, self.host = parts.scheme, parts.netloc.lower()
@@ -335,7 +405,7 @@ class Recon:
         self.step = "sitemaps"
         await self.sitemaps(scout, sitemaps or [u for u in guesses if self.robots.allows(u)], guessed=not sitemaps)
         self.step = None
-        links = [u for u in (self.same_site(urljoin(url, h)) for h in HREF.findall(home.head)) if u]
+        links = [u for u in (self.same_site(join(url, h)) for h in HREF.findall(home.head)) if u]
         listed = [u for u in (self.same_site(u) for u in self.listed) if u]
         pool = list(dict.fromkeys(listed + links))
         pool = [u for u in pool if u.rstrip("/") != url.rstrip("/")]
@@ -343,7 +413,7 @@ class Recon:
         # products from all over the sitemap: its first ones can all be one dead corner of the catalogue
         random.Random(0).shuffle(products)
         self.links, self.products = links, products
-        self.deep: str | None = self.page or next(iter(products or pool), None)
+        self.deep = self.page or next(iter(products or pool), None)
         random.Random(0).shuffle(pool)  # pages from all over the sitemap, not one corner of it
         self.pool = pool
         f["page"] = self.deep
@@ -372,6 +442,9 @@ class Recon:
                 fails += 0 if guessed else 1
                 continue
             fails = 0
+            if guessed and not looks_like_sitemap(a.body):  # a soft 404 page: try the next guess
+                files.append({"url": url, "status": a.status, "verdict": "not a sitemap"})
+                continue
             if guessed:  # the first guess that answers is the sitemap: the others are not asked
                 queue, guessed = [], False
             try:
@@ -395,8 +468,12 @@ class Recon:
             "files": files[:40],
         }
 
+    def main_pages(self) -> list[str]:
+        """The pages a client must be let in on: the home page, and the deeper page if there is one."""
+        return [p for p in (self.home, self.deep) if p]
+
     def pages(self) -> list[str]:
-        return [p for p in (self.home, self.deep, self.origin + "/robots.txt") if p]
+        return [*self.main_pages(), self.origin + "/robots.txt"]
 
     async def clients(self) -> None:
         """Every client of CLIENTS with a browser User-Agent on the three pages."""
@@ -416,7 +493,7 @@ class Recon:
             finally:
                 await client.aclose()
         self.f["clients"] = rows
-        main_pages = self.pages()[:2]
+        main_pages = self.main_pages()
         let_in = [
             k
             for k in settings.CLIENTS
@@ -549,8 +626,7 @@ class Recon:
                 near += [
                     u
                     for u in (
-                        self.same_site(urljoin(self.product_answer.url, h))
-                        for h in HREF.findall(self.product_answer.head)
+                        self.same_site(join(self.product_answer.url, h)) for h in HREF.findall(self.product_answer.head)
                     )
                     if u
                 ]
@@ -561,7 +637,7 @@ class Recon:
                     a = await self.get(client, category)
                     self.keep(a)
                     listing = listing_page(
-                        [u for u in (self.same_site(urljoin(category, h)) for h in HREF.findall(a.head)) if u]
+                        [u for u in (self.same_site(join(category, h)) for h in HREF.findall(a.head)) if u]
                     )
             if listing:
                 probes += [("a listing page", listing[0]), (f"its page {settings.FAR_PAGE}", listing[1])]

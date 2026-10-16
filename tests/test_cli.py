@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from recon import __version__
-from recon.cli import load_report, main
+from recon.cli import changes_since, load_report, main, write
 
 
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:
@@ -28,3 +28,13 @@ def test_load_report(tmp_path: Path) -> None:
     assert load_report(good) == {"began": "2026-10-15"}
     assert load_report(listed) is None
     assert load_report(tmp_path / "missing.json") is None
+
+
+def test_a_lone_surrogate_is_written_all_the_same(tmp_path: Path) -> None:
+    write(tmp_path / "r.md", "a\ud83db")
+    assert (tmp_path / "r.md").read_text(encoding="utf-8") == "a?b"
+
+
+def test_a_report_of_another_shape_is_not_compared() -> None:
+    assert changes_since({"platforms": ["Shopify"]}, {"platforms": []}) is None
+    assert changes_since({"way_in": "a"}, {"way_in": "b"}) == ["way in: a -> b"]

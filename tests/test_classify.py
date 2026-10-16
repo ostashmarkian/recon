@@ -3,7 +3,7 @@
 import pytest
 from fakes import CHALLENGE
 
-from recon.classify import GUARDS, judge, vendors_of
+from recon.classify import GUARDS, judge, passes, vendors_of
 from recon.clients import Answer
 
 ANSWERS = [
@@ -52,6 +52,18 @@ ANSWERS = [
     ),
     ("a timeout is no refusal", Answer("u", error="ReadTimeout: timed out"), "error"),
     ("404", Answer("u", 404), "gone"),
+    ("400 is the client's error, not ok", Answer("u", 400), "client-error"),
+    ("422 too", Answer("u", 422), "client-error"),
+    ("408 is a lost answer", Answer("u", 408), "error"),
+    ("a redirect to a product whose id holds 403", Answer("u", 301, {"location": "/product/14032/"}), "redirect"),
+    ("a redirect on a host named ...block...", Answer("u", 302, {"location": "https://glassblock.test/x"}), "redirect"),
+    ("a redirect to a captcha page", Answer("u", 302, {"location": "/captcha/?from=/"}), "blocked"),
+    (
+        "Imperva's script on a normal page",
+        Answer("u", 200, {}, (), b"<script src='/_Incapsula_Resource?x'></script>" + b"<p>a shop page</p>" * 1000),
+        "ok",
+    ),
+    ("x-datadome on a 404", Answer("u", 404, {"x-datadome": "protected"}), "gone"),
     ("524", Answer("u", 524), "server-error"),
 ]
 
@@ -59,6 +71,11 @@ ANSWERS = [
 @pytest.mark.parametrize(("answer", "verdict"), [pytest.param(a, v, id=name) for name, a, v in ANSWERS])
 def test_judge(answer: Answer, verdict: str) -> None:
     assert judge(answer)[0] == verdict
+
+
+def test_a_client_error_is_not_let_in() -> None:
+    assert not passes("client-error")
+    assert passes("gone") and passes("redirect")
 
 
 def test_judge_names_retry_after() -> None:

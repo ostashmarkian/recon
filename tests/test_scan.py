@@ -270,6 +270,49 @@ def test_an_api_robots_txt_disallows_is_not_asked():
     assert not any(path.startswith("/wp-json") for _, _, path in site.asked)
 
 
+def test_a_home_page_redirecting_to_a_captcha_is_no_way_in():
+    f, text, _ = scan(FakeSite(home_captcha=True), burst=False)
+    assert f["home_redirect"] == "302 to /captcha/?from=/: not followed (a block)"
+    assert f["let_in"] == []
+    assert f["level"]["level"] == 5, "not 'level 0, nothing refused'"
+    assert "The home page redirects 302 to /captcha/?from=/: not followed (a block)" in text
+
+
+def test_an_address_python_cannot_parse_is_left_out():
+    f, _, _ = scan(FakeSite(home_extra='<a href="https://[shop-domain]/help">help</a>'), burst=False)
+    assert "errors" not in f
+    assert f["pool"] == 41
+
+
+def test_a_step_that_breaks_leaves_the_others_their_report(monkeypatch):
+    import recon.probe
+
+    def broken(answers):
+        raise RuntimeError("a page recon cannot read")
+
+    monkeypatch.setattr(recon.probe, "sources_of", broken)
+    f, text, _ = scan(FakeSite())
+    assert f["errors"] == [{"step": "sources", "error": "RuntimeError: a page recon cannot read"}]
+    assert f["burst"]["steps"], "the burst ran all the same"
+    assert "## Errors" in text and "- sources: RuntimeError: a page recon cannot read" in text
+
+
+def test_with_no_deeper_page_robots_txt_is_no_main_page():
+    class Bare(FakeSite):
+        def answer(self, client, url, headers):
+            path = url.removeprefix(BASE) or "/"
+            if path == "/":
+                return Answer(url, 200, {"server": "nginx"}, (), b"<html><title>Hi</title>no links</html>", 0.01)
+            if path == "/robots.txt":
+                return Answer(url, 403, {"server": "nginx"}, (), b"<title>403 Forbidden</title>", 0.01)
+            return Answer(url, 404, {"server": "nginx"}, (), b"", 0.01)
+
+    f, _, _ = scan(Bare(), burst=False)
+    assert f["page"] is None
+    assert f["let_in"] == list(settings.CLIENTS)
+    assert f["level"]["level"] != 5
+
+
 def test_sitemap_guessed_when_robots_names_none():
     site = FakeSite(sitemap_at="/xmlsitemap.php")
     f, _, _ = scan(site, burst=False)
