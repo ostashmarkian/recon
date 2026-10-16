@@ -84,12 +84,17 @@ class FakeSite:
         wrap=False,
         crawl_delay=None,
         rate=False,
+        robots_status=200,
+        robots_moved=False,
+        home_extra="",
     ):
         self.guard, self.refuse_uas, self.lock, self.limit = guard, refuse_uas, lock, limit
         self.drop_after, self.slow, self.http, self.disallow = drop_after, slow, http, disallow
         self.sitemap_at = sitemap_at  # robots.txt names no sitemap, and it is here
         self.soft404, self.wrap = soft404, wrap  # 200 for what is not there; listing pages past the end as page 1
         self.crawl_delay, self.rate = crawl_delay, rate
+        self.robots_status, self.robots_moved = robots_status, robots_moved  # robots.txt failing, or redirected
+        self.home_extra = home_extra  # more HTML at the end of the home page
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
         self.session = asyncio.Lock() if lock else None
@@ -102,7 +107,11 @@ class FakeSite:
             return Answer(url, 403, {**h, "cf-mitigated": "challenge"}, (), CHALLENGE.encode(), 0.01, http=self.http)
         if any(name in ua for name in self.refuse_uas):
             return Answer(url, 403, h, (), b"<title>Forbidden</title>", 0.01, http=self.http)
-        if path == "/robots.txt":
+        if path == "/robots.txt" and self.robots_moved:
+            return Answer(url, 301, {**h, "location": f"{BASE}/real-robots.txt"}, (), b"", 0.01, http=self.http)
+        if path == "/robots.txt" and self.robots_status != 200:
+            return Answer(url, self.robots_status, h, (), b"<title>Service unavailable</title>", 0.01, http=self.http)
+        if path in ("/robots.txt", "/real-robots.txt"):
             body = f"User-agent: *\nDisallow: {self.disallow or ''}\n"
             body += f"Crawl-delay: {self.crawl_delay}\n" if self.crawl_delay else ""
             body += "" if self.sitemap_at else f"Sitemap: {BASE}/sitemap.xml\n"
@@ -114,7 +123,8 @@ class FakeSite:
         if path == "/sitemap-2.xml.gz":
             return Answer(url, 200, h, (), gzip.compress(urlset(range(21, 41))), 0.01, http=self.http)
         if path == "/":
-            return Answer(url, 200, h, ("sid",), HOME.encode(), 0.01, http=self.http)
+            body = HOME.replace("</body>", self.home_extra + "</body>")
+            return Answer(url, 200, h, ("sid",), body.encode(), 0.01, http=self.http)
         number = path.strip("/").split("/")[-1]
         if path.startswith("/product/") and number.isdigit() and 1 <= int(number) <= 40:
             headers = {**h, "x-ratelimit-remaining": "99"} if self.rate else h

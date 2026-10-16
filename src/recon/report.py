@@ -94,6 +94,10 @@ def report(f: Findings) -> str:
     session, burst = f.get("session") or {}, f.get("burst") or {}
 
     out += ["## Verdict", ""]
+    if f.get("stopped"):
+        rb = f.get("robots") or {}
+        out += [f"- **Stopped:** {f['stopped']}", f"- robots.txt: {rb.get('url')}, {rb.get('state')}", ""]
+        return "\n".join(out) + "\n"
     level = f.get("level") or {}
     if level:
         out.append(f"- **Protection: level {level['level']} of 5, {level['label']}.** {level['said']}")
@@ -320,7 +324,9 @@ def report(f: Findings) -> str:
         out.append(f"- generator: {f['generator']}")
     rb = f.get("robots") or {}
     out.append(
-        f"- robots.txt: {rb.get('status')} {rb.get('verdict')}, {rb.get('disallow', 0)} Disallow lines"
+        f"- robots.txt: {rb.get('status')} {rb.get('verdict')}, {rb.get('state', 'read')}"
+        + (f" at {rb['url']}" if rb.get("url") and not str(rb["url"]).endswith(f"{host}/robots.txt") else "")
+        + f", {rb.get('disallow', 0)} Disallow lines"
         + (f", Crawl-delay {rb['crawl_delay']}" if rb.get("crawl_delay") else "")
         + (f", sitemaps: {', '.join(rb['sitemaps'][:5])}" if rb.get("sitemaps") else ", no sitemap named")
     )

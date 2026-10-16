@@ -83,7 +83,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 
 from . import settings
 from .browser import open_in_browser
@@ -117,9 +116,13 @@ from .pages import (
     sources_of,
 )
 from .platforms import api_request, api_says, platforms_of
+from .robots import Robots
+from .robots import parse as parse_robots
 from .sample import page_record, sample_findings
 
 log = logging.getLogger(__name__)
+# Steps whose refusals keep the burst off; the User-Agent test is left out: refusing bots by name is not a limit
+WATCHED_STEPS = ("sitemaps", "platform", "product", "not_found", "sample")
 
 
 class Recon:
@@ -151,6 +154,9 @@ class Recon:
         self.notes = read_notes(notes) if isinstance(notes, (str, Path)) else list(notes or [])
         self.sample_size = products
         self.requests = 0
+        self.step: str | None = None  # the step under way, for refusals seen in it
+        self.refused: dict[str, dict[str, int]] = {s: {} for s in WATCHED_STEPS}
+        self.stopped: str | None = None  # why the run stopped early
         self.f: Findings = {"url": url, "began": datetime.now().astimezone().isoformat(timespec="seconds")}
 
     async def get(
@@ -166,6 +172,8 @@ class Recon:
         self.requests += 1
         a = await client.fetch(url, headers=headers, data=data)
         verdict, why = judge(a)
+        if verdict in REFUSALS and self.step in WATCHED_STEPS:
+            self.refused[self.step][verdict] = self.refused[self.step].get(verdict, 0) + 1
         log.info("%s %s %s%s", url, a.status or "-", verdict, f" ({why})" if why else "")
         return a
 
@@ -177,9 +185,9 @@ class Recon:
         if parts.scheme not in ("http", "https") or host.removeprefix("www.") != self.host.removeprefix("www."):
             return None
         url = parts._replace(scheme=self.scheme, netloc=self.host, fragment="").geturl()
-        if ASSET.search(parts.path) or SKIPPED_PATHS.search(parts.path) or not self.robots.can_fetch("*", url):
+        if ASSET.search(parts.path) or SKIPPED_PATHS.search(f"{parts.path}?{parts.query}"):
             return None
-        return url
+        return url if self.robots.allows(url) else None
 
     async def run(self) -> Findings:
         began = time.monotonic()
@@ -189,13 +197,21 @@ class Recon:
             await self.look_around(scout)
         finally:
             await scout.aclose()
+        if self.stopped:
+            return self.stop_early(began)
         await self.clients()
         await self.user_agents()
         await self.real_browser()
-        await self.platform()
-        await self.product()
-        await self.not_found()
-        await self.product_sample()
+        for step, do in (
+            ("platform", self.platform),
+            ("product", self.product),
+            ("not_found", self.not_found),
+            ("sample", self.product_sample),
+        ):
+            self.step = step
+            await do()
+        self.step = None
+        f["refused_elsewhere"] = {step: got for step, got in self.refused.items() if got}
         f["sources"] = sources_of([a for a in (self.home_answer, self.product_answer) if a])
         f["rendering"] = {
             name: drawn(a)
@@ -215,6 +231,33 @@ class Recon:
         f["requests"] = self.requests
         f["seconds"] = round(time.monotonic() - began, 1)
         return f
+
+    def stop_early(self, began: float) -> Findings:
+        """The findings of a run that stopped after robots.txt: what it saw, and why it stopped."""
+        f = self.f
+        f.update(stopped=self.stopped, protection=[], way_in="not looked at", vendors=vendors_of(self.seen))
+        f["requests"] = self.requests
+        f["seconds"] = round(time.monotonic() - began, 1)
+        return f
+
+    async def read_robots(self, scout: Client) -> tuple[Robots, str, Answer, str]:
+        """robots.txt, its redirects followed (RFC 9309 asks for five at least, across hosts too):
+        (its rules, "read" | "not there" | "unreadable", the last answer, its address)."""
+        url = self.origin + "/robots.txt"
+        for _ in range(settings.REDIRECTS + 1):
+            a = await self.get(scout, url)
+            self.seen.append(a)
+            if a.status and 300 <= a.status < 400 and a.location:
+                url = urljoin(url, a.location)
+                continue
+            break
+        verdict = judge(a)[0]
+        if a.status == 200 and verdict == "ok":
+            return parse_robots(a.text), "read", a, url
+        if a.status and 400 <= a.status < 500 and verdict not in REFUSALS:
+            return Robots(), "not there", a, url  # the RFC: no robots.txt, nothing disallowed
+        # a 5xx, a refusal or no answer: the RFC's "unreachable", so everything counts as disallowed
+        return Robots(disallow_all=True), "unreadable", a, url
 
     async def look_around(self, scout: Client) -> None:
         """The home page, its redirects followed; robots.txt; the sitemaps;
@@ -238,38 +281,40 @@ class Recon:
         f["home"] = url
         f["home_answer"] = summary(home)
 
-        robots = await self.get(scout, self.origin + "/robots.txt")
-        self.seen.append(robots)
-        self.robots = RobotFileParser()
-        self.robots_text = robots.text if robots.status == 200 else ""
-        lines = self.robots_text.splitlines()
-        self.robots.parse(lines)
-        sitemaps = [line.split(":", 1)[1].strip() for line in lines if line.lower().startswith("sitemap:")]
+        self.robots, state, robots, robots_url = await self.read_robots(scout)
+        self.robots_text = robots.text if state == "read" else ""
+        sitemaps = self.robots.sitemaps
         f["robots"] = {
             "status": robots.status,
             "verdict": judge(robots)[0],
-            "disallow": sum(line.lower().startswith("disallow:") and line[9:].strip() != "" for line in lines),
-            "crawl_delay": next(
-                (line.split(":", 1)[1].strip() for line in lines if line.lower().startswith("crawl-delay:")), None
-            ),
+            "state": state,
+            "url": robots_url,
+            "disallow": self.robots.disallows,
+            "crawl_delay": self.robots.crawl_delay_said,
             "sitemaps": sitemaps,
         }
-        try:
-            self.crawl_delay = float(f["robots"]["crawl_delay"] or 0) or None
-        except ValueError:
-            self.crawl_delay = None
-        if self.crawl_delay and self.crawl_delay > self.pause and not self.pause_given:
-            self.pause = self.crawl_delay
-            log.info(
-                "robots.txt asks Crawl-delay %g s: one request every %g s from here (--pause to choose)",
-                self.crawl_delay,
-                self.pause,
-            )
+        self.crawl_delay = self.robots.crawl_delay
+        if self.crawl_delay and not self.pause_given:
+            if self.crawl_delay > settings.CRAWL_DELAY_MOST:
+                self.stopped = (
+                    f"robots.txt asks Crawl-delay {self.robots.crawl_delay_said} s, more than recon's limit of "
+                    f"{settings.CRAWL_DELAY_MOST:g} s; it stops here (--pause S goes on at a pace you choose)"
+                )
+                log.info(self.stopped)
+                return
+            if self.crawl_delay > self.pause:
+                self.pause = self.crawl_delay
+                log.info(
+                    "robots.txt asks Crawl-delay %g s: one request every %g s from here (--pause to choose)",
+                    self.crawl_delay,
+                    self.pause,
+                )
         f["pause"] = self.pause
 
-        await self.sitemaps(
-            scout, sitemaps or [self.origin + path for path in settings.SITEMAP_PATHS], guessed=not sitemaps
-        )
+        guesses = [self.origin + path for path in settings.SITEMAP_PATHS]
+        self.step = "sitemaps"
+        await self.sitemaps(scout, sitemaps or [u for u in guesses if self.robots.allows(u)], guessed=not sitemaps)
+        self.step = None
         links = [u for u in (self.same_site(urljoin(url, h)) for h in HREF.findall(home.text)) if u]
         listed = [u for u in (self.same_site(u) for u in self.listed) if u]
         pool = list(dict.fromkeys(listed + links))
@@ -294,7 +339,8 @@ class Recon:
         lastmods: list[str] = []
         files: list[dict[str, Any]] = []
         queue, seen = list(queue), set()
-        while queue and read < settings.SITEMAP_FILES:
+        fails = 0  # files in a row that did not answer
+        while queue and read < settings.SITEMAP_FILES and fails < settings.SITEMAP_FAILS_MOST:
             url = queue.pop(0)
             if url in seen:
                 continue
@@ -303,7 +349,9 @@ class Recon:
             read += 1
             if a.status != 200:
                 files.append({"url": url, "status": a.status, "verdict": judge(a)[0]})
+                fails += 0 if guessed else 1
                 continue
+            fails = 0
             if guessed:  # the first guess that answers is the sitemap: the others are not asked
                 queue, guessed = [], False
             try:
@@ -422,6 +470,9 @@ class Recon:
                         )
                     continue
                 method, url, headers, body = asked
+                if not self.robots.allows(url):
+                    apis.append({"platform": name, "url": None, "says": f"robots.txt disallows {urlsplit(url).path}"})
+                    continue
                 a = await self.get(client, url, headers=headers, data=body)
                 self.seen.append(a)
                 apis.append({"platform": name, "url": url, "method": method, **summary(a), "says": api_says(name, a)})
@@ -494,7 +545,7 @@ class Recon:
                     )
             if listing:
                 probes += [("a listing page", listing[0]), (f"its page {settings.FAR_PAGE}", listing[1])]
-            for name, url in probes:
+            for name, url in [(n, u) for n, u in probes if self.robots.allows(u)]:
                 a = await self.get(client, url)
                 self.seen.append(a)
                 rows.append(
@@ -568,7 +619,7 @@ class Recon:
         none; other pages, so the second set is not served from a cache the
         first one warmed."""
         f = self.f
-        if self.crawl_delay:  # several at a time is what the delay asks not to do
+        if f["robots"].get("crawl_delay"):  # several at a time is what the delay asks not to do
             f["session"] = {"skipped": f"robots.txt asks Crawl-delay {self.crawl_delay:g}"}
             return
         cookies = {c for a in self.seen if not a.error for c in a.cookies}

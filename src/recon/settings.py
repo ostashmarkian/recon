@@ -72,6 +72,8 @@ REDIRECTS = 5
 
 
 SITEMAP_FILES = 30
+SITEMAP_FAILS_MOST = 5  # sitemap files in a row that do not answer: the rest are not asked
+CRAWL_DELAY_MOST = 60.0  # s: robots.txt asking for more stops the run (unless --pause names a pace)
 
 
 # where a sitemap is looked for when robots.txt names none: BigCommerce keeps it at /xmlsitemap.php

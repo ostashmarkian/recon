@@ -16,7 +16,13 @@ from urllib.parse import urlsplit
 from . import settings
 from .clients import Answer
 
-SKIPPED_PATHS = re.compile(r"cart|checkout|basket|account|login|logout|register|wishlist|compare|customer|admin", re.I)
+# Pages a look-over must not ask for: they hold an account or change the site's state. Matched against the path
+# and the query, since a cart action is often a query (?add-to-cart=12, ?controller=cart, ?route=checkout/cart).
+SKIPPED_PATHS = re.compile(
+    r"cart|checkout|basket|account|login|logout|signin|sign-in|register|wishlist|compare|customer|admin|password"
+    r"|[?&](?:action|do|op)=(?:add|remove|delete|buy|vote|subscribe)",
+    re.I,
+)
 
 
 ASSET = re.compile(r"\.(jpe?g|png|gif|webp|svg|ico|css|js|pdf|zip|xml|gz|txt|mp4|woff2?)(\?|$)", re.I)

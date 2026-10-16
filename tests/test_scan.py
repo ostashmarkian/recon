@@ -224,6 +224,52 @@ def test_robots_txt_keeps_pages_out_of_the_pool():
     assert f["pool"] == 41 - 11
 
 
+def test_a_redirected_robots_txt_is_followed():
+    f, _, _ = scan(FakeSite(robots_moved=True, disallow="/product/1"), burst=False)
+    assert (f["robots"]["state"], f["robots"]["url"]) == ("read", f"{BASE}/real-robots.txt")
+    assert f["pool"] == 41 - 11, "its Disallow kept"
+
+
+def test_an_unreadable_robots_txt_keeps_recon_to_the_home_page():
+    site = FakeSite(robots_status=503)
+    f, _, _ = scan(site)
+    assert f["robots"]["state"] == "unreadable"
+    assert f["pool"] == 0
+    assert "robots.txt could not be read: everything counts as disallowed" in f["burst"]["skipped"]
+    assert not any(path.startswith("/product/") for _, _, path in site.asked)
+
+
+def test_links_that_change_the_sites_state_stay_out():
+    extra = '<a href="/?add-to-cart=7">buy</a><a href="/index.php?route=checkout/cart">cart</a>'
+    site = FakeSite(home_extra=extra)
+    scan(site, burst=False)
+    assert not any("add-to-cart" in path or "checkout" in path for _, _, path in site.asked)
+
+
+def test_a_crawl_delay_past_the_limit_stops_the_run(monkeypatch):
+    monkeypatch.setattr(settings, "PAUSE", 0.001)
+    site = FakeSite(crawl_delay=3600)
+    f, text, _ = scan(site, pause=None)
+    assert f["stopped"].startswith("robots.txt asks Crawl-delay 3600 s, more than recon's limit of 60 s")
+    assert [path for _, _, path in site.asked] == ["/", "/robots.txt"]
+    assert "- **Stopped:** robots.txt asks Crawl-delay 3600 s" in text
+
+
+def test_refusals_in_the_product_sample_keep_the_burst_off():
+    f, _, _ = scan(FakeSite(limit=3))
+    assert f["refused_elsewhere"] == {"sample": {"limited": 6}}
+    assert "refused in other steps: sample (6 limited)" in f["burst"]["skipped"]
+
+
+def test_an_api_robots_txt_disallows_is_not_asked():
+    site = FakeSite(disallow="/wp-json/")
+    f, _, _ = scan(site, burst=False)
+    assert [a["says"] for a in f["apis"] if a["platform"] == "WooCommerce"] == [
+        "robots.txt disallows /wp-json/wc/store/v1/products"
+    ]
+    assert not any(path.startswith("/wp-json") for _, _, path in site.asked)
+
+
 def test_sitemap_guessed_when_robots_names_none():
     site = FakeSite(sitemap_at="/xmlsitemap.php")
     f, _, _ = scan(site, burst=False)

@@ -155,6 +155,14 @@ def protection(f: Findings) -> list[str]:
         why.append("no client let in")
     if f.get("session", {}).get("refused"):
         why.append(f"refused in the session test ({f['session']['refused']})")
+    elsewhere = f.get("refused_elsewhere") or {}
+    if elsewhere:
+        why.append(
+            "refused in other steps: "
+            + "; ".join(f"{step} ({', '.join(f'{n} {v}' for v, n in got.items())})" for step, got in elsewhere.items())
+        )
+    if (f.get("robots") or {}).get("state") == "unreadable":
+        why.append("robots.txt could not be read: everything counts as disallowed")
     return why
 
 
