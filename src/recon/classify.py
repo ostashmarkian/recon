@@ -88,9 +88,12 @@ def judge(a: Answer) -> tuple[str, str]:
         return "challenge", "Kasada"
     if "captcha-delivery.com" in low or (s in (403, 429) and "x-datadome" in h):
         return "challenge", "DataDome"
-    # Imperva puts its script on normal pages too: a challenge is a small page holding little but it
-    if "incapsula incident" in low or ("_incapsula_resource" in low and len(a.body) < 10_000):
+    # Imperva puts its script on normal pages too, small 404s among them: its challenge is a 200 holding little
+    # but it, its block an "Incapsula incident" page
+    if "incapsula incident" in low:
         return ("challenge" if s == 200 else "blocked"), "Imperva"
+    if s == 200 and "_incapsula_resource" in low and len(a.body) < 10_000:
+        return "challenge", "Imperva"
     if "px-captcha" in low or (s == 403 and "_pxhd" in a.cookies):
         return "challenge", "HUMAN (PerimeterX)"
     if "sucuri_cloudproxy_js" in low:

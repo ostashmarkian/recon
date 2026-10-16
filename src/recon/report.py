@@ -96,8 +96,9 @@ def report(f: Findings) -> str:
     out += ["## Verdict", ""]
     if f.get("stopped"):
         rb = f.get("robots") or {}
-        out += [f"- **Stopped:** {f['stopped']}", f"- robots.txt: {rb.get('url')}, {rb.get('state')}", ""]
-        return "\n".join(out) + "\n"
+        out += [f"- **Stopped:** {f['stopped']}"]
+        out += [f"- robots.txt: {rb.get('url')}, {rb.get('state')}"] if rb else []
+        return "\n".join(out) + "\n\n"
     level = f.get("level") or {}
     if level:
         out.append(f"- **Protection: level {level['level']} of 5, {level['label']}.** {level['said']}")
@@ -120,7 +121,7 @@ def report(f: Findings) -> str:
     if burst.get("skipped"):
         out.append(
             "- **Burst:** skipped ("
-            + ("protection found" if burst["skipped"] == f["protection"] else "; ".join(burst["skipped"]))
+            + ("for what is seen above" if burst["skipped"] == f["protection"] else "; ".join(burst["skipped"]))
             + ")"
         )
     elif burst:

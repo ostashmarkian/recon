@@ -11,7 +11,8 @@ The report goes to recon-reports/<host>-<when>.md and .json and to stdout;
 the newest earlier .json of the same host there, or --compare FILE, is set
 against it: what changed since.
 
-1. The home page (its redirects followed), robots.txt, the sitemaps it names
+1. The home page (its redirects on the site followed: one to another site
+   stops the run, which names the address to run on), robots.txt, the sitemaps it names
    or else the first of SITEMAP_PATHS that answers (SITEMAP_FILES at most),
    and one deeper page: --page, or a product the sitemap or the home page's
    links point to, picked at random so one dead corner of a sitemap is not
@@ -91,7 +92,7 @@ from urllib.parse import urljoin, urlsplit
 
 from . import settings
 from .browser import open_in_browser
-from .classify import LOST, REFUSALS, judge, passes, title_of, vendors_of
+from .classify import LOST, REFUSALS, judge, title_of, vendors_of
 from .clients import Answer, Client, make_client
 from .findings import (
     Findings,
@@ -292,9 +293,10 @@ class Recon:
             self.computed("ua_filter", lambda: ua_filter(f))
             await self.isolated("burst", self.burst)
         finally:  # whatever broke, the findings close with what the report needs
-            self.computed("protection", lambda: protection(f), [])
-            self.computed("level", lambda: protection_level(f))
-            self.computed("way_in", lambda: way_in(f), "unknown: the run broke before it was found")
+            if not self.stopped:  # a run stopped early judged nothing: no level, no way in
+                self.computed("protection", lambda: protection(f), [])
+                self.computed("level", lambda: protection_level(f))
+                self.computed("way_in", lambda: way_in(f), "unknown: the run broke before it was found")
             self.computed("rate_headers", lambda: rate_headers(self.seen))
             self.computed("notes", lambda: notes_on(self.host, self.notes))
             f["requests"] = self.requests
@@ -365,6 +367,11 @@ class Recon:
             if hop is None or judge(home)[0] == "blocked" or not same_host(hop, url):
                 why = "a block" if judge(home)[0] == "blocked" else "another site" if hop else "not an address"
                 f["home_redirect"] = f"{home.status} to {home.location}: not followed ({why})"
+                if why == "another site":  # a site that moved: its report is a run on the new address
+                    self.stopped = (
+                        f"the home page redirects ({home.status}) to {hop}, another site; recon looks at the site "
+                        "it is given only: run it on that address"
+                    )
                 break
             url = hop
         self.home, self.home_answer = url, home
@@ -373,6 +380,8 @@ class Recon:
         self.origin = f"{self.scheme}://{self.host}"
         f["home"] = url
         f["home_answer"] = summary(home)
+        if self.stopped:
+            return
 
         self.robots, state, robots, robots_url = await self.read_robots(scout)
         self.robots_text = robots.text if state == "read" else ""
@@ -497,13 +506,16 @@ class Recon:
                 await client.aclose()
         self.f["clients"] = rows
         main_pages = self.main_pages()
-        let_in = [
-            k
-            for k in settings.CLIENTS
-            if all(passes(r["verdict"]) for r in rows if r["client"] == k and r["page"] in main_pages)
-        ]
+        got = {
+            k: [r["verdict"] for r in rows if r["client"] == k and r["page"] in main_pages] for k in settings.CLIENTS
+        }
+        # let in: refused and cut off on none of the main pages, answered on one at least. A 4xx is the page's own
+        # and a timeout no refusal, so neither turns a client away; one that only timed out had no answer
+        turned = {k for k, verdicts in got.items() if any(v in (*REFUSALS, "dropped") for v in verdicts)}
+        let_in = [k for k, verdicts in got.items() if k not in turned and any(v not in LOST for v in verdicts)]
         self.best = let_in[0] if let_in else None
         self.f["let_in"] = let_in
+        self.f["no_answer"] = [k for k in got if k not in turned and k not in let_in]
 
     def ua_for(self, kind: str) -> str | None:
         return None if kind.startswith("curl-") else settings.CHROME_UA

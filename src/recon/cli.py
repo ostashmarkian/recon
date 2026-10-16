@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             findings["compared_with"] = {"file": Path(source).name, "began": earlier.get("began")}
             findings["changes"] = changes
     args.out.mkdir(parents=True, exist_ok=True)
-    stem = f"{host}-{datetime.now():%Y-%m-%d-%H%M}"
+    stem = f"{host}-{datetime.now():%Y-%m-%d-%H%M%S}"  # to the second: a second run in the same minute is kept too
     # the .json first: if the report itself broke, the findings are on disk all the same
     write(args.out / f"{stem}.json", json.dumps(findings, indent=1, ensure_ascii=False, default=str))
     text = report(findings)

@@ -26,7 +26,7 @@ class TestOpenSite:
         assert f["protection"] == []
         assert f["way_in"] == "httpx HTTP/2, a browser User-Agent, cookies or none alike"
         assert f["level"]["level"] == 0
-        assert "**Protection: level 0 of 5, none seen.** Nothing in front, nothing refused." in text
+        assert "**Protection: level 0 of 5, none seen.** Nothing in front; no client or User-Agent turned away." in text
         assert f["let_in"] == list(settings.CLIENTS)
         assert (f["browser"], browser.urls) == (None, []), "no browser without a challenge"
         assert len(f["uas"]) == len(settings.UAS)
@@ -140,7 +140,7 @@ def test_guard_letting_every_probe_in():
     assert (f["let_in"], browser.urls) == (list(settings.CLIENTS), [])
     assert f["protection"] == ["in front: Cloudflare"]
     assert f["burst"] == {"skipped": ["in front: Cloudflare"]}
-    assert (f["level"]["level"], f["level"]["label"]) == (1, "a service in front, nothing refused")
+    assert (f["level"]["level"], f["level"]["label"]) == (1, "a service in front, no client turned away")
 
 
 def test_myra_in_front_keeps_the_burst_off():
@@ -282,10 +282,19 @@ def test_an_unreadable_robots_txt_keeps_recon_to_the_home_page():
 
 
 def test_links_that_change_the_sites_state_stay_out():
-    extra = '<a href="/?add-to-cart=7">buy</a><a href="/index.php?route=checkout/cart">cart</a>'
-    site = FakeSite(home_extra=extra)
+    state = [
+        "/?add-to-cart=7",
+        "/index.php?route=checkout/cart",
+        "/?remove_item=ab12",
+        "/?buy=12",
+        "/order/add?product=12",
+        "/kosik/pridat/?id=4",
+        "/warenkorb/",
+        "/koszyk/",
+    ]
+    site = FakeSite(home_extra="".join(f'<a href="{s}">x</a>' for s in state))
     scan(site, burst=False)
-    assert not any("add-to-cart" in path or "checkout" in path for _, _, path in site.asked)
+    assert not [path for _, _, path in site.asked if path in state]
 
 
 def test_a_crawl_delay_past_the_limit_stops_the_run(monkeypatch):
@@ -295,12 +304,47 @@ def test_a_crawl_delay_past_the_limit_stops_the_run(monkeypatch):
     assert f["stopped"].startswith("robots.txt asks Crawl-delay 3600 s, more than recon's limit of 60 s")
     assert [path for _, _, path in site.asked] == ["/", "/robots.txt"]
     assert "- **Stopped:** robots.txt asks Crawl-delay 3600 s" in text
+    assert "level" not in f, "not 'level 5, nothing let in'"
 
 
 def test_refusals_in_the_product_sample_keep_the_burst_off():
     f, _, _ = scan(FakeSite(limit=3))
     assert f["refused_elsewhere"] == {"sample": {"limited": 6}}
     assert "refused in other steps: sample (6 limited)" in f["burst"]["skipped"]
+    assert (f["level"]["level"], f["level"]["label"]) == (1, "a rate limit"), "a 429 is a limit at any pace"
+
+
+def test_a_refused_sitemap_keeps_the_burst_off_but_is_no_rate_limit():
+    f, text, _ = scan(FakeSite(sitemap_refused=True))
+    assert f["refused_elsewhere"] == {"sitemaps": {"refused": 1}}
+    assert "refused in other steps: sitemaps (1 refused)" in f["burst"]["skipped"]
+    assert (f["level"]["level"], f["level"]["label"]) == (0, "none seen")
+    assert "Refused one at a time in sitemaps (1 refused)." in f["level"]["said"]
+    assert "rate limit" not in text
+
+
+def test_a_deeper_page_answering_400_turns_no_client_away():
+    f, _, _ = scan(FakeSite(), page=f"{BASE}/bad-request/", burst=False)
+    assert f["let_in"] == list(settings.CLIENTS), "a 4xx is the page's own, no refusal"
+    assert f["level"]["level"] == 0
+
+
+def test_a_client_with_no_answer_is_no_filter():
+    f, text, _ = scan(FakeSite(silent_for=("curl-safari",)), burst=False)
+    assert f["no_answer"] == ["curl-safari"]
+    assert "curl-safari" not in f["let_in"]
+    assert f["level"]["level"] == 0, "not 'level 3, a filter by fingerprint'"
+    assert "No answer in time from curl_cffi as Safari: not counted as turned away." in text
+
+
+def test_a_home_page_moved_to_another_site_stops_the_run():
+    site = FakeSite(home_moved=True)
+    f, text, _ = scan(site)
+    assert f["stopped"].startswith("the home page redirects (301) to https://moved.test/, another site")
+    assert [path for _, _, path in site.asked] == ["/"], "nothing more asked"
+    assert "level" not in f, "a stopped run judges no protection"
+    assert "- **Stopped:** the home page redirects (301) to https://moved.test/" in text
+    assert "robots.txt:" not in text
 
 
 def test_an_api_robots_txt_disallows_is_not_asked():

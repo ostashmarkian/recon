@@ -3,8 +3,9 @@
 import gzip
 
 import pytest
-from fakes import BASE, PRODUCT, page, sitemap_index, urlset
+from fakes import BASE, PRODUCT, ld, page, sitemap_index, urlset
 
+from recon import settings
 from recon.clients import Answer
 from recon.pages import (
     HREF,
@@ -85,6 +86,14 @@ def test_product_data_mends_raw_line_breaks_and_reads_meta() -> None:
     data = product_data(Answer("u", 200, {}, (), raw.encode()))
     assert (data["jsonld"]["name"], data["jsonld"]["price"], data["jsonld"]["offers"]) == ("x y", "2", 2)
     assert data["meta"] == {"product:price:amount": "2.00", "og:type": "product"}
+
+
+def test_json_ld_past_the_first_head_bytes_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Big pages carry their JSON-LD at the end, past what is read for words and tags."""
+    monkeypatch.setattr(settings, "HEAD", 1_000)
+    body = "<html><title>P</title>" + "<p>filler</p>" * 500 + ld("MPN-9", "S-9") + "</html>"
+    data = product_data(page(body))
+    assert data["jsonld"]["mpn"] == "MPN-9"
 
 
 def test_product_data_on_a_page_with_none() -> None:

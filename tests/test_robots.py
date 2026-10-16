@@ -1,8 +1,9 @@
 """robots.txt as RFC 9309 reads it."""
 
 import math
+import time
 
-from recon.robots import Robots, parse
+from recon.robots import Robots, matches, parse
 
 
 def test_crawl_delay_indented_spaced_and_commented() -> None:
@@ -21,6 +22,30 @@ def test_wildcards_and_the_end_anchor() -> None:
     assert not robots.allows("https://s.test/shop/?add-to-cart=12")
     assert not robots.allows("https://s.test/a/b.pdf")
     assert robots.allows("https://s.test/a/b.pdf?x=1")
+
+
+def test_star_and_end_anchor_cases() -> None:
+    for pattern, path, hit in [
+        ("/a*b", "/axxb/c", True),
+        ("/a*b$", "/axxb", True),
+        ("/a*b$", "/axxbc", False),
+        ("/*", "/x", True),
+        ("*", "/x", True),
+        ("/x$", "/x", True),
+        ("/x$", "/xy", False),
+        ("/a*b*c", "/acb", False),
+        ("/a*b*c", "/abbc", True),
+        ("/fish*.php", "/fishheads/catfish.php?p=1", True),
+    ]:
+        assert matches(pattern, path) is hit, (pattern, path)
+
+
+def test_a_pattern_of_many_stars_is_matched_without_backtracking() -> None:
+    robots = parse("User-agent: *\nDisallow: /*a*a*a*a*a*a*a*a*a*a*b\n")
+    began = time.monotonic()
+    assert robots.allows("https://s.test/" + "a" * 20_000), "no b: allowed"
+    assert time.monotonic() - began < 1
+    assert not robots.allows("https://s.test/" + "a" * 20 + "b")
 
 
 def test_the_longest_match_wins_and_allow_wins_a_tie() -> None:

@@ -41,7 +41,7 @@ KNOWN_REFUSERS = {"AWS CloudFront", "a captcha page"} | set(GUARDS)
 
 LEVELS = (
     "none seen",
-    "a service in front, nothing refused",
+    "a service in front, no client turned away",
     "a filter by name",
     "a filter by fingerprint",
     "a challenge for every client",
@@ -84,14 +84,15 @@ def protection_level(f: Findings) -> dict[str, Any]:
     vendors = f.get("vendors") or {}
     rows = f.get("clients") or []
     let_in = f.get("let_in") or []
-    # turned away: a client not let in, as let_in counts, on the home page and the deeper page
-    turned = [k for k in dict.fromkeys(r["client"] for r in rows) if k not in let_in]
+    silent = f.get("no_answer") or []  # no answer in time: not let in, and not turned away either
+    # turned away: refused or cut off on the home page or the deeper page, as let_in counts
+    turned = [k for k in dict.fromkeys(r["client"] for r in rows) if k not in let_in and k not in silent]
     browser = f.get("browser") or {}
     guards = guards_named(f)
     named = Counter(r["why"] for r in rows if r["verdict"] in REFUSALS and r["why"] in KNOWN_REFUSERS)
     refusers = [w for w, _ in named.most_common()]  # services only: a page's title is no one's name
     who = ", ".join(refusers) or "; ".join(guards) or "The site"
-    if not let_in:
+    if not let_in and turned:
         level = 4 if browser.get("passed") else 5
     elif turned:
         level = 3
@@ -102,14 +103,18 @@ def protection_level(f: Findings) -> dict[str, Any]:
     else:
         level = 0
 
-    if level == 0:
-        said = "Nothing in front, nothing refused."
+    if not let_in and not turned:
+        said = "No client got an answer in time: the protection could not be judged."
+    elif level == 0:
+        said = "Nothing in front; no client or User-Agent turned away."
     elif level == 1:
-        said = f"{'; '.join(guards) or ', '.join(vendors)} in front; every client and User-Agent let in."
+        said = f"{'; '.join(guards) or ', '.join(vendors)} in front; no client or User-Agent turned away."
     elif level == 2:
+        tried = len(dict.fromkeys(r["client"] for r in rows))
+        clients = f"all {tried}" if len(let_in) == tried else f"{len(let_in)} of {tried}"
         said = (
             f"{'; '.join(guards) or 'The site'} refuses User-Agents by name ({f['ua_filter']}); "
-            f"all {len(let_in)} clients with a browser User-Agent are let in, no challenge seen."
+            f"{clients} clients with a browser User-Agent are let in, no challenge seen."
         )
     elif level == 3:
         verdicts = sorted(
@@ -135,14 +140,26 @@ def protection_level(f: Findings) -> dict[str, Any]:
             tail = " The refusals were no challenges, so no browser was tried."
         said = f"{who} lets no client in." + tail
 
+    if silent and let_in:
+        said += f" No answer in time from {', '.join(client_name(k) for k in silent)}: not counted as turned away."
+
     label = LEVELS[level]
-    under_load = []
-    if (f.get("session") or {}).get("refused"):
-        under_load.append("the session test, 4 at a time")
-    if f.get("refused_elsewhere"):
-        under_load.append("later steps: " + ", ".join(f.get("refused_elsewhere") or {}))
-    if under_load:
-        said += f" Refused under load in {'; '.join(under_load)}: a rate limit."
+    # a rate limit: refused with several at a time, or a 429 at any pace; another refusal one at a time is a page's
+    elsewhere = f.get("refused_elsewhere") or {}
+    limits = [step for step, got in elsewhere.items() if "limited" in got]
+    rate = (["the session test, 4 at a time"] if (f.get("session") or {}).get("refused") else []) + (
+        [f"{', '.join(limits)} (429, one at a time)"] if limits else []
+    )
+    others = {step: {v: n for v, n in got.items() if v != "limited"} for step, got in elsewhere.items()}
+    others = {step: got for step, got in others.items() if got}
+    if others:
+        said += (
+            " Refused one at a time in "
+            + "; ".join(f"{step} ({', '.join(f'{n} {v}' for v, n in got.items())})" for step, got in others.items())
+            + "."
+        )
+    if rate:
+        said += f" A rate limit: refused in {'; '.join(rate)}."
         if level == 0:
             level, label = 1, "a rate limit"
 

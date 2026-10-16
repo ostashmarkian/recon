@@ -6,8 +6,9 @@ a category listing. It can be told to put Cloudflare in front and challenge
 every httpx client, refuse some User-Agents, serve one cookie's requests one at
 a time, answer 429 past a number of requests, drop connections, slow down with
 more at a time, speak HTTP/1.1 only, answer 200 for what is not there, wrap its
-listing, ask for a Crawl-delay, put Myra in front, or answer 200 with a PHP
-warning in place of its product pages when too many are asked at once.
+listing, ask for a Crawl-delay, put Myra in front, answer 200 with a PHP
+warning in place of its product pages when too many are asked at once, give
+some clients no answer, refuse its sitemap, or redirect its home page away.
 """
 
 from __future__ import annotations
@@ -95,6 +96,9 @@ class FakeSite:
         home_extra="",
         home_captcha=False,
         shrink_over=None,
+        silent_for=(),
+        sitemap_refused=False,
+        home_moved=False,
     ):
         self.guard, self.refuse_uas, self.lock, self.limit = guard, refuse_uas, lock, limit
         self.drop_after, self.slow, self.http, self.disallow = drop_after, slow, http, disallow
@@ -105,6 +109,9 @@ class FakeSite:
         self.home_extra = home_extra  # more HTML at the end of the home page
         self.home_captcha = home_captcha  # the home page redirects to a captcha page
         self.shrink_over = shrink_over  # more product pages at once than this: a 200 with a PHP warning
+        self.silent_for = silent_for  # client kinds that get no answer in time, on any page
+        self.sitemap_refused = sitemap_refused  # the sitemap robots.txt names answers 403, as S3 does
+        self.home_moved = home_moved  # the home page redirects to another site
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
         self.most_in_flight = 0  # the most requests out at once
@@ -124,6 +131,10 @@ class FakeSite:
             return Answer(url, 403, h, (), b"<title>Forbidden</title>", 0.01, http=self.http)
         if path == "/" and self.home_captcha:
             return Answer(url, 302, {**h, "location": "/captcha/?from=/"}, (), b"", 0.01, http=self.http)
+        if path == "/" and self.home_moved:
+            return Answer(url, 301, {**h, "location": "https://moved.test/"}, (), b"", 0.01, http=self.http)
+        if path == "/bad-request/":
+            return Answer(url, 400, h, (), b"<title>Bad Request</title>", 0.01, http=self.http)
         if path == "/captcha/":
             return Answer(url, 200, h, (), b"<html><title>Are you a robot?</title></html>", 0.01, http=self.http)
         if path == "/robots.txt" and self.robots_moved:
@@ -135,6 +146,8 @@ class FakeSite:
             body += f"Crawl-delay: {self.crawl_delay}\n" if self.crawl_delay else ""
             body += "" if self.sitemap_at else f"Sitemap: {BASE}/sitemap.xml\n"
             return Answer(url, 200, h, (), body.encode(), 0.01, http=self.http)
+        if path == "/sitemap.xml" and self.sitemap_refused:
+            return Answer(url, 403, h, (), b"<title>Forbidden</title>", 0.01, http=self.http)
         if path == (self.sitemap_at or "/sitemap.xml"):
             return Answer(url, 200, h, (), sitemap_index(), 0.01, http=self.http)
         if path == "/sitemap-1.xml":
@@ -174,6 +187,8 @@ class FakeClient:
     async def fetch(self, url: str, headers: dict | None = None, data: bytes | None = None) -> Answer:
         site = self.site
         site.asked.append((self.kind, self.ua, url.removeprefix(BASE)))
+        if self.kind in site.silent_for:
+            return Answer(url, error="TimeoutError: no answer within 90 s", seconds=90)
         began = asyncio.get_running_loop().time()
         if site.session and self.jar:  # one session's requests one at a time
             async with site.session:

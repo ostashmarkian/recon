@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: the first update after 1.0.0
+## 1.1.0 - 2026-10-17
 
 - The verdict opens with a protection level from 0 (none seen) to 5 (nothing let in): who refused, what got
   through, whether a real browser's cookie carries over, and what one run cannot see.
@@ -17,7 +17,7 @@ From an audit (2026-10-16):
   match; redirects are followed. A robots.txt that cannot be read disallows
   everything. A Crawl-delay is read wherever its line sits; over 60 s, the run
   stops after robots.txt. Cart and checkout links, including those in a query
-  string, are never asked. A refusal in any step keeps the burst off. Platform
+  string, are left out. A refusal in any step keeps the burst off. Platform
   APIs, guessed sitemaps and not-found probes are asked only where robots.txt
   allows.
 - **Safety of the tool:**
@@ -33,14 +33,14 @@ From an audit (2026-10-16):
   Last-Modified dates, a lone surrogate and a foreign `--compare` file no
   longer break the run.
 - **Verdicts:**
-  - a home-page redirect to a captcha or another site is not followed;
+  - a home-page redirect to a captcha is not followed, and one to another
+    site stops the run, naming the address to run recon on;
   - other 4xx are `client-error`, not `ok`, and 408 is a lost answer;
   - a block redirect is judged by its path only;
   - Imperva's script on a normal page and `x-datadome` on a 404 are not
     challenges;
   - robots.txt is never a main page;
-  - the level is consistent with `let_in`, names services only, and calls
-    refusals seen only under load a rate limit;
+  - the level is consistent with `let_in` and names services only;
   - `&amp;` in sitemaps is decoded, and links come from `<a href>` only;
   - comparisons ignore byte counts and timings.
 - The real httpx and curl_cffi clients are tested against a local server, and the
@@ -56,7 +56,30 @@ From what scrapers met on real shops:
 - **Myra Security** is recognised (`Server: myracloud`, its `/myracloud-blocked/` and
   `/myracloud-captcha/` pages) and counts as protection. It lets the first requests
   in and bans the whole IP minutes later, so the burst stays off behind it.
-- 155 tests.
+
+From an independent review against 1.0.0 (local scenarios and four live shops):
+
+- **The protection level reads only what was seen:**
+  - a client turned away is one refused or cut off; one with no answer in time is
+    named as such and is no "filter by fingerprint";
+  - a 4xx on the deeper page is that page's own, not a refusal, so it no longer
+    reads "nothing let in";
+  - when no client got an answer at all, the level says it could not judge;
+  - a rate limit is a 429, or a refusal with several requests at a time; other
+    refusals met one at a time are named with their step, with no level raised.
+- A run stopped early (a Crawl-delay over the limit, a home page on another site)
+  carries no level and no way in.
+- Imperva's script on a small 404 is no block.
+- JSON-LD is read from the whole page, not only its first megabyte: big pages
+  carry it at their end.
+- robots.txt patterns are matched without backtracking: a pattern of many `*`
+  stalled a run for four minutes.
+- More links that change a site's state are left out: `?remove_item=`, `?buy=`,
+  `/order/add`, and a cart in Czech, Polish, German, French, Spanish, Italian,
+  Dutch and Russian.
+- Report names carry the second, so a second run in the same minute no longer
+  overwrites the first.
+- 166 tests.
 
 ## 1.0.0 - 2026-10-15
 

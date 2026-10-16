@@ -56,7 +56,7 @@ Cloudflare, abridged, with the shop's identity replaced:
 > - **Protection: level 3 of 5, a filter by fingerprint.** Cloudflare turns away httpx HTTP/2, httpx HTTP/1.1, httpx HTTP/2 + PHA (challenge) with a browser User-Agent; let in: httpx HTTP/1.1 + PHA, curl_cffi as Chrome, curl_cffi as Safari, curl_cffi as Firefox. Python's own TLS is what is turned away: the TLS fingerprint decides. httpx with PHA passes over HTTP/1.1 only, so the HTTP/2 fingerprint counts too. A real browser is let in and gets cf_clearance, but the cookie does not carry over to the clients.
 > - **Way in:** httpx HTTP/1.1 + PHA, a browser User-Agent, no cookies (a session lock)
 > - **Session lock:** yes: 1.98/s with one cookie jar, 6.3/s with none, 4 at a time
-> - **Burst:** skipped (protection found)
+> - **Burst:** skipped (for what is seen above)
 > - **Product data:** JSON-LD mpn `PN-0001-A`, sku `1000000001`, brand `ACME COMPONENTS`, price `19.9800`, currency `USD`, availability `InStock`; no gtin; words for part number, maker, stock
 > - **Product sample:** 10 of 10 pages read; mpn 10/10, sku 10/10, price 10/10; currency USD; a stock number on 0; no trap seen
 > - **Not-found pages:** a made-up product redirects to /Errors/GenericError; a made-up path redirects to /Errors/GenericError
@@ -168,8 +168,8 @@ The verdict opens with a protection level, from what the run saw:
 
 | Level | Meaning |
 |---|---|
-| 0 | nothing in front, nothing refused |
-| 1 | a service in front (a CDN, an anti-bot service), nothing refused |
+| 0 | nothing in front, no client or User-Agent turned away |
+| 1 | a service in front (a CDN, an anti-bot service), no client turned away; or a rate limit (a 429, or refusals with several requests at a time) |
 | 2 | a filter by name: bot and tool User-Agents refused, any client with a browser User-Agent let in |
 | 3 | a filter by fingerprint: some clients turned away even with a browser User-Agent (TLS, HTTP/2), others let in |
 | 4 | a challenge for every client: only a real browser gets in |
@@ -211,8 +211,12 @@ or public sites whose terms permit it. It is careful by default:
   (a server error, a refusal, no answer), every page counts as disallowed.
   Sitemaps, platform APIs and the not-found probes are asked only where it
   allows, and so are the pages of the session test, the sample and the burst;
-- links that would change the site's state (add to cart, checkout, a cart
-  route, `action=add`) are never asked;
+- links that look like they change the site's state are left out: a cart,
+  checkout or account route (in several languages), `?add-to-cart=`,
+  `?remove_item=`, `action=add`. It is a list of patterns, so a shop with its
+  own words for these can slip past it;
+- a home page that redirects to another site stops the run: recon looks at the
+  site it is given, and names the address to run it on;
 - any refusal, in any step, keeps the burst off;
 - **the burst runs only when nothing protects the site.** Any anti-bot service
   in front, a browser-like client turned away, or a Crawl-delay turns it off.
@@ -237,7 +241,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 155 tests, offline, ~70 s
+pytest                                       # 166 tests, offline, ~75 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```

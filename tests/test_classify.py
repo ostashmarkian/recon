@@ -64,6 +64,7 @@ ANSWERS = [
         "ok",
     ),
     ("x-datadome on a 404", Answer("u", 404, {"x-datadome": "protected"}), "gone"),
+    ("Imperva's script on a small 404", Answer("u", 404, {}, (), b"<script src='/_Incapsula_Resource?x'>"), "gone"),
     ("524", Answer("u", 524), "server-error"),
     (
         "Myra's ban: a 503 to /myracloud-blocked/",

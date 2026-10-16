@@ -1,4 +1,4 @@
-<!-- A real recon report (1.0.0). The shop's name, its product ids, part numbers, maker and
+<!-- A real recon report (1.1.0). The shop's name, its product ids, part numbers, maker and
      analytics id are replaced; every verdict, count and timing is as recon found it. -->
 
 # recon: shop.example
@@ -13,7 +13,7 @@
 - **User-Agent filter:** challenge HeadlessChrome, empty, python-requests, python-httpx, Python-urllib, curl CLI, Wget, Scrapy, AhrefsBot; blocked GPTBot, ClaudeBot, Bytespider (not protection here: the burst sends a browser's)
 - **Way in:** httpx HTTP/1.1 + PHA, a browser User-Agent, no cookies (a session lock)
 - **Session lock:** yes: 1.98/s with one cookie jar, 6.3/s with none, 4 at a time
-- **Burst:** skipped (protection found)
+- **Burst:** skipped (for what is seen above)
 - **Product data:** JSON-LD mpn `PN-0001-A`, sku `1000000001`, brand `ACME COMPONENTS`, price `19.9800`, currency `USD`, availability `InStock`; no gtin; words for part number, maker, stock
 - **Product sample:** 10 of 10 pages read; mpn 10/10, sku 10/10, price 10/10; currency USD; a stock number on 0; no trap seen
 - **Freshness:** cache DYNAMIC 11/11; Cache-Control `private`

@@ -64,7 +64,42 @@ def test_refused_only_under_load_is_a_rate_limit() -> None:
         {"clients": rows, "let_in": ["httpx-h2"], "vendors": {}, "session": {"refused": "with no cookies"}}
     )
     assert (level["level"], level["label"]) == (1, "a rate limit")
-    assert "Refused under load in the session test, 4 at a time: a rate limit." in level["said"]
+    assert "A rate limit: refused in the session test, 4 at a time." in level["said"]
+
+
+OK_ROW = {"client": "httpx-h2", "page": "https://s.test/", "verdict": "ok", "why": ""}
+
+
+def test_a_refusal_one_at_a_time_is_a_pages_not_a_rate_limit() -> None:
+    """A sitemap answering 403, as S3 does for a missing file: said, but no rate limit and no level up."""
+    f = {"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": {}, "refused_elsewhere": {"sitemaps": {"refused": 1}}}
+    level = protection_level(f)
+    assert (level["level"], level["label"]) == (0, "none seen")
+    assert (
+        level["said"]
+        == "Nothing in front; no client or User-Agent turned away. Refused one at a time in sitemaps (1 refused)."
+    )
+
+
+def test_a_429_one_at_a_time_is_a_rate_limit() -> None:
+    f = {"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": {}, "refused_elsewhere": {"sample": {"limited": 6}}}
+    level = protection_level(f)
+    assert (level["level"], level["label"]) == (1, "a rate limit")
+    assert "A rate limit: refused in sample (429, one at a time)." in level["said"]
+
+
+def test_a_client_with_no_answer_is_not_turned_away() -> None:
+    """A timeout is no refusal: no filter by fingerprint for a slow page."""
+    rows = [OK_ROW, {"client": "curl-chrome", "page": "https://s.test/", "verdict": "error", "why": "TimeoutError"}]
+    f = {"clients": rows, "let_in": ["httpx-h2"], "no_answer": ["curl-chrome"], "vendors": {}}
+    level = protection_level(f)
+    assert level["level"] == 0
+    assert "No answer in time from curl_cffi as Chrome: not counted as turned away." in level["said"]
+    silent = protection_level({"clients": rows[1:], "let_in": [], "no_answer": ["curl-chrome"], "vendors": {}})
+    assert (silent["level"], silent["said"]) == (
+        0,
+        "No client got an answer in time: the protection could not be judged.",
+    ), "not 'level 5, nothing let in'"
 
 
 def test_a_burst_compared_by_how_it_stopped_not_its_timings() -> None:

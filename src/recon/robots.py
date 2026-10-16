@@ -11,7 +11,6 @@ A robots.txt that could not be read (a 5xx, a refusal, no answer) means
 """
 
 import math
-import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from urllib.parse import unquote, urlsplit
@@ -45,16 +44,33 @@ class Robots:
 
 
 @lru_cache(maxsize=4096)
-def pattern_regex(pattern: str) -> re.Pattern[str]:
-    """A robots.txt path pattern as a regex: "*" any run of characters, a final "$" the end."""
+def pattern_parts(pattern: str) -> tuple[tuple[str, ...], bool]:
+    """A robots.txt path pattern as (its literal parts between the "*"s, whether a final "$" ends it)."""
     pattern = unquote(pattern)
     end = pattern.endswith("$")
-    body = "".join(".*" if c == "*" else re.escape(c) for c in (pattern[:-1] if end else pattern))
-    return re.compile(body + ("$" if end else ""))
+    return tuple((pattern[:-1] if end else pattern).split("*")), end
 
 
 def matches(pattern: str, path: str) -> bool:
-    return pattern_regex(pattern).match(path) is not None
+    """Whether `path` starts as `pattern` asks: "*" any run of characters, a final "$" the end.
+    Each part is placed leftmost after the one before, which is the best place for it, so nothing
+    is tried twice: a "/*a*a*a*a*b" against a long path stays linear, where a regex backtracks."""
+    parts, end = pattern_parts(pattern)
+    first, *rest = parts
+    if not path.startswith(first):
+        return False
+    at = len(first)
+    if not rest:
+        return not end or at == len(path)
+    *middle, last = rest
+    for part in middle:
+        found = path.find(part, at)
+        if found < 0:
+            return False
+        at = found + len(part)
+    if end:
+        return path.endswith(last) and len(path) - len(last) >= at
+    return path.find(last, at) >= 0
 
 
 def delay_of(value: str) -> float | None:

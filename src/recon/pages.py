@@ -20,6 +20,9 @@ from .clients import Answer
 # and the query, since a cart action is often a query (?add-to-cart=12, ?controller=cart, ?route=checkout/cart).
 SKIPPED_PATHS = re.compile(
     r"cart|checkout|basket|account|login|logout|signin|sign-in|register|wishlist|compare|customer|admin|password"
+    # a cart in other languages: Czech and Slovak, Polish, German, French, Spanish, Italian, Dutch, Russian
+    r"|kosik|ko%c5%a1%c3%adk|koszyk|warenkorb|panier|carrito|carrello|winkelwagen|korzina"
+    r"|/orders?/(?:add|new|create)|[?&](?:buy|remove_item|add)="
     r"|[?&](?:action|do|op)=(?:add|remove|delete|buy|vote|subscribe)",
     re.I,
 )
@@ -268,9 +271,10 @@ def product_fields(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def product_data(a: Answer) -> dict[str, Any]:
-    """What a product page carries: JSON-LD, microdata, product meta tags, and labels in its words."""
+    """What a product page carries: JSON-LD, from the whole page (big pages carry it at their end, and
+    its scan is linear); microdata, product meta tags and labels in its words, from its first HEAD bytes."""
     html = a.head
-    products = ld_products(html)
+    products = ld_products(a.text)
     jsonld = {k: v for k, v in product_fields(products[0]).items() if v not in (None, "")} if products else {}
     microdata = {}
     for found in ITEMPROP.finditer(html):
