@@ -25,6 +25,7 @@ class Answer:
     seconds: float = 0.0
     error: str | None = None  # no answer: why
     http: str = ""
+    cut: bool = False  # the body was longer than BODY_KEPT and is cut there
 
     @property
     def text(self) -> str:
@@ -79,21 +80,26 @@ class HttpxClient:
     async def fetch(self, url: str, headers: dict[str, str] | None = None, data: bytes | None = None) -> Answer:
         """A GET, or a POST of `data`."""
         began = time.monotonic()
+        body, cut = bytearray(), False
         try:
-            if data is None:
-                r = await self.client.get(url, headers=headers)
-            else:
-                r = await self.client.post(url, headers=headers, content=data)
-        except httpx.HTTPError as e:
+            # read as a stream, decoded, up to BODY_KEPT: a page or a compression bomb larger than that is cut
+            async with self.client.stream("GET" if data is None else "POST", url, headers=headers, content=data) as r:
+                async for chunk in r.aiter_bytes():
+                    body += chunk
+                    if len(body) > settings.BODY_KEPT:
+                        cut = True
+                        break
+        except Exception as e:
             return Answer(url, error=f"{type(e).__name__}: {e}"[:300], seconds=time.monotonic() - began)
         return Answer(
             url,
             r.status_code,
             {k.lower(): v for k, v in r.headers.items()},
             cookie_names(r.headers.get_list("set-cookie")),
-            r.content[: settings.BODY_KEPT],
+            bytes(body[: settings.BODY_KEPT]),
             time.monotonic() - began,
             http="h2" if r.http_version == "HTTP/2" else "h1",
+            cut=cut,
         )
 
     async def aclose(self) -> None:
@@ -105,10 +111,10 @@ class CurlClient:
     User-Agent unless `ua`; no cookie kept unless `cookies`."""
 
     def __init__(self, kind: str, ua: str | None, cookies: bool) -> None:
+        from curl_cffi.curl import CURL_WRITEFUNC_ERROR
         from curl_cffi.requests import AsyncSession
-        from curl_cffi.requests.exceptions import RequestException
 
-        self.failure, self.ua = RequestException, ua
+        self.stop_writing, self.ua = CURL_WRITEFUNC_ERROR, ua
         self.session: Any = AsyncSession(impersonate=kind.split("-", 1)[1], discard_cookies=not cookies, max_clients=16)
 
     async def fetch(self, url: str, headers: dict[str, str] | None = None, data: bytes | None = None) -> Answer:
@@ -116,6 +122,18 @@ class CurlClient:
         sent: dict[str, str] = {} if self.ua is None else {"User-Agent": self.ua}
         sent.update(headers or {})
         began = time.monotonic()
+        chunks: list[bytes] = []
+        size = 0
+
+        def take(chunk: bytes) -> int:
+            """curl's write callback, given the body decoded: past BODY_KEPT, the transfer stops."""
+            nonlocal size
+            size += len(chunk)
+            if size > settings.BODY_KEPT:
+                return int(self.stop_writing)
+            chunks.append(chunk)
+            return len(chunk)
+
         try:
             r = await self.session.request(
                 "GET" if data is None else "POST",
@@ -124,15 +142,21 @@ class CurlClient:
                 data=data,
                 allow_redirects=False,
                 timeout=settings.TIMEOUT,
+                content_callback=take,
             )
-        except self.failure as e:
-            return Answer(url, error=f"{type(e).__name__}: {e}"[:300], seconds=time.monotonic() - began)
+        except Exception as e:
+            said = (
+                f"BodyTooLarge: over {settings.BODY_KEPT:,} bytes"
+                if size > settings.BODY_KEPT
+                else f"{type(e).__name__}: {e}"
+            )
+            return Answer(url, error=said[:300], seconds=time.monotonic() - began)
         return Answer(
             url,
             r.status_code,
             {k.lower(): v for k, v in r.headers.items() if v is not None},
             cookie_names(r.headers.get_list("set-cookie")),
-            r.content[: settings.BODY_KEPT],
+            b"".join(chunks),
             time.monotonic() - began,
             # curl's CURL_HTTP_VERSION_*: 3-5 are HTTP/2, 30-31 HTTP/3
             http={3: "h2", 4: "h2", 5: "h2", 30: "h3", 31: "h3"}.get(int(r.http_version), "h1"),

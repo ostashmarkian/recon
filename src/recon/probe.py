@@ -79,6 +79,7 @@ import random
 import time
 import zlib
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,20 @@ from .robots import parse as parse_robots
 from .sample import page_record, sample_findings
 
 log = logging.getLogger(__name__)
+
+
+async def fetch_within(
+    client: Client, url: str, headers: dict[str, str] | None = None, data: bytes | None = None
+) -> Answer:
+    """client.fetch(), given REQUEST_MOST seconds in all."""
+    try:
+        return await asyncio.wait_for(client.fetch(url, headers=headers, data=data), settings.REQUEST_MOST)
+    except TimeoutError:
+        return Answer(
+            url, error=f"TimeoutError: no answer within {settings.REQUEST_MOST} s", seconds=settings.REQUEST_MOST
+        )
+
+
 # Steps whose refusals keep the burst off; the User-Agent test is left out: refusing bots by name is not a limit
 WATCHED_STEPS = ("sitemaps", "platform", "product", "not_found", "sample")
 
@@ -170,12 +185,17 @@ class Recon:
         if pause and self.requests:
             await asyncio.sleep(self.pause)
         self.requests += 1
-        a = await client.fetch(url, headers=headers, data=data)
+        a = await fetch_within(client, url, headers, data)
         verdict, why = judge(a)
         if verdict in REFUSALS and self.step in WATCHED_STEPS:
             self.refused[self.step][verdict] = self.refused[self.step].get(verdict, 0) + 1
         log.info("%s %s %s%s", url, a.status or "-", verdict, f" ({why})" if why else "")
         return a
+
+    def keep(self, *answers: Answer) -> None:
+        """Answers for the findings that read only headers, cookies and the first HEAD bytes: kept that light,
+        so a run of 450 answers on 1 MB pages does not hold half a gigabyte."""
+        self.seen.extend(replace(a, body=a.body[: settings.HEAD]) for a in answers)
 
     def same_site(self, url: str) -> str | None:
         """The address on the home page's host, or None: elsewhere, an asset,
@@ -246,7 +266,7 @@ class Recon:
         url = self.origin + "/robots.txt"
         for _ in range(settings.REDIRECTS + 1):
             a = await self.get(scout, url)
-            self.seen.append(a)
+            self.keep(a)
             if a.status and 300 <= a.status < 400 and a.location:
                 url = urljoin(url, a.location)
                 continue
@@ -269,7 +289,7 @@ class Recon:
         self.sample_answers: list[Answer] = []
         for _ in range(settings.REDIRECTS + 1):
             home = await self.get(scout, url)
-            self.seen.append(home)
+            self.keep(home)
             if home.status and 300 <= home.status < 400 and home.location:
                 url = urljoin(url, home.location)
                 continue
@@ -315,7 +335,7 @@ class Recon:
         self.step = "sitemaps"
         await self.sitemaps(scout, sitemaps or [u for u in guesses if self.robots.allows(u)], guessed=not sitemaps)
         self.step = None
-        links = [u for u in (self.same_site(urljoin(url, h)) for h in HREF.findall(home.text)) if u]
+        links = [u for u in (self.same_site(urljoin(url, h)) for h in HREF.findall(home.head)) if u]
         listed = [u for u in (self.same_site(u) for u in self.listed) if u]
         pool = list(dict.fromkeys(listed + links))
         pool = [u for u in pool if u.rstrip("/") != url.rstrip("/")]
@@ -356,7 +376,7 @@ class Recon:
                 queue, guessed = [], False
             try:
                 kind, locs, mods = read_sitemap(a.body)
-            except (OSError, EOFError, zlib.error) as e:
+            except (OSError, EOFError, ValueError, zlib.error) as e:
                 files.append({"url": url, "status": a.status, "verdict": f"unreadable: {e}"})
                 continue
             files.append({"url": url, "status": a.status, "kind": kind, "addresses": len(locs)})
@@ -386,7 +406,7 @@ class Recon:
             try:
                 for url in self.pages():
                     a = await self.get(client, url)
-                    self.seen.append(a)
+                    self.keep(a)
                     rows.append({"client": kind, "page": url, **summary(a)})
                     # the platform is read from a home page let in, not from a challenge
                     if url == self.home and judge(a)[0] == "ok" and judge(self.home_answer)[0] != "ok":
@@ -417,7 +437,7 @@ class Recon:
                     a = await self.get(client, self.home)
                 finally:
                     await client.aclose()
-                self.seen.append(a)
+                self.keep(a)
                 rows.append({"ua": name, **summary(a)})
         self.f["uas"] = rows
         self.f["uas_through"] = self.best
@@ -458,7 +478,7 @@ class Recon:
         client = self.make(self.best or "curl-chrome", ua=self.ua_for(self.best or "curl-chrome"))
         try:
             for name, _, _ in platforms:
-                asked = api_request(name, self.origin, self.home_answer.text)
+                asked = api_request(name, self.origin, self.home_answer.head)
                 if asked is None:
                     if name == "BigCommerce":
                         apis.append(
@@ -474,7 +494,7 @@ class Recon:
                     apis.append({"platform": name, "url": None, "says": f"robots.txt disallows {urlsplit(url).path}"})
                     continue
                 a = await self.get(client, url, headers=headers, data=body)
-                self.seen.append(a)
+                self.keep(a)
                 apis.append({"platform": name, "url": url, "method": method, **summary(a), "says": api_says(name, a)})
         finally:
             await client.aclose()
@@ -493,7 +513,7 @@ class Recon:
                         break
                     client = client or self.make(self.best, ua=self.ua_for(self.best))
                     a = await self.get(client, url)
-                    self.seen.append(a)
+                    self.keep(a)
                 tried.append(url)
                 if judge(a)[0] != "ok":
                     continue
@@ -530,7 +550,7 @@ class Recon:
                     u
                     for u in (
                         self.same_site(urljoin(self.product_answer.url, h))
-                        for h in HREF.findall(self.product_answer.text)
+                        for h in HREF.findall(self.product_answer.head)
                     )
                     if u
                 ]
@@ -539,15 +559,15 @@ class Recon:
                 category = next((u for u in self.links if u not in self.products), None)
                 if category:
                     a = await self.get(client, category)
-                    self.seen.append(a)
+                    self.keep(a)
                     listing = listing_page(
-                        [u for u in (self.same_site(urljoin(category, h)) for h in HREF.findall(a.text)) if u]
+                        [u for u in (self.same_site(urljoin(category, h)) for h in HREF.findall(a.head)) if u]
                     )
             if listing:
                 probes += [("a listing page", listing[0]), (f"its page {settings.FAR_PAGE}", listing[1])]
             for name, url in [(n, u) for n, u in probes if self.robots.allows(u)]:
                 a = await self.get(client, url)
-                self.seen.append(a)
+                self.keep(a)
                 rows.append(
                     {
                         "probe": name,
@@ -577,7 +597,7 @@ class Recon:
                 if stopped:
                     return
                 self.requests += 1
-                a = await client.fetch(url)
+                a = await fetch_within(client, url)
                 answers.append(a)
                 verdict = judge(a)[0]
                 if verdict in LOST:
@@ -606,7 +626,7 @@ class Recon:
                 a = self.product_answer if url == first and self.product_answer else None
                 if a is None:
                     a = await self.get(client, url)
-                    self.seen.append(a)
+                    self.keep(a)
                 self.sample_answers.append(a)
                 if judge(a)[0] == "ok":
                     records.append(page_record(a))
@@ -635,11 +655,11 @@ class Recon:
             client = self.make(self.best, ua=self.ua_for(self.best), cookies=mode == "with one jar")
             try:
                 if mode == "with one jar":
-                    self.seen.append(await self.get(client, self.home))  # the session's cookie
+                    self.keep(await self.get(client, self.home))  # the session's cookie
                 answers, wall = await self.at_once(client, urls, settings.SESSION_AT_ONCE)
             finally:
                 await client.aclose()
-            self.seen.extend(answers)
+            self.keep(*answers)
             took = [a.seconds for a in answers if not a.error]
             result[mode] = {
                 "per_s": round(len(answers) / wall, 2),
@@ -679,7 +699,7 @@ class Recon:
                 answers, wall = await self.at_once(
                     client, [next(urls) for _ in range(n)], limit, lost_max=settings.LOST_MAX
                 )
-                self.seen.extend(answers)
+                self.keep(*answers)
                 log.info("burst: %d at a time, %d answered in %.1fs: %s", limit, len(answers), wall, counts(answers))
                 http = http or next((a.http for a in answers if a.http), None)
                 took = [a.seconds for a in answers if not a.error]
@@ -726,7 +746,7 @@ class Recon:
             if stop:
                 await asyncio.sleep(settings.RECOVER)
                 a = await self.get(client, self.home, pause=False)
-                self.seen.append(a)
+                self.keep(a)
                 result["after"] = {"seconds": settings.RECOVER, **summary(a)}
         finally:
             await client.aclose()

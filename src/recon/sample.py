@@ -1,14 +1,13 @@
 """A sample of product pages: what share carries each field, and the traps a
 scraper falls into in them."""
 
-import html as entities
 import re
 from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
 from .clients import Answer
-from .pages import SCRIPTS, TAG, product_data
+from .pages import product_data, visible_text
 
 # What a sample of product pages can show wrong in a field
 SAMPLE_FIELDS = ("mpn", "sku", "gtin", "brand", "price", "currency", "availability", "inventory")
@@ -63,7 +62,7 @@ def page_record(a: Answer) -> dict[str, Any]:
         "availability": ld.get("availability") or md.get("availability"),
         "inventory": ld.get("inventory") or md.get("inventoryLevel"),
     }
-    words = " ".join(entities.unescape(TAG.sub(" ", SCRIPTS.sub(" ", a.text))).split())
+    words = visible_text(a.head)
     count = STOCK_COUNT.search(words)
     steps = {int(s) for s in QTY_STEP.findall(words)}
     rows = [{n.rstrip("+") for n in found.group(1).split()} for found in QTY_ROW.finditer(words)]
@@ -72,7 +71,7 @@ def page_record(a: Answer) -> dict[str, Any]:
         or len(steps) >= 3
         or any(len(r) >= 3 for r in rows)
         or (ld.get("offers") or 0) > 1
-        or "eligibleQuantity" in a.text
+        or "eligibleQuantity" in a.head
     )
     return {
         "url": a.url,

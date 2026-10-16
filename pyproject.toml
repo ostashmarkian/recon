@@ -47,6 +47,10 @@ version = { attr = "recon.__version__" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
+filterwarnings = [
+    # Windows only: curl_cffi runs a selector thread beside the Proactor event loop, and says so
+    "ignore:\\s*Proactor event loop does not implement add_reader:curl_cffi.utils.CurlCffiWarning",
+]
 
 [tool.ruff]
 line-length = 120

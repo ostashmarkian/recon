@@ -65,7 +65,9 @@ TIMEOUT = 30
 BODY_KEPT = 60_000_000  # bytes of an answer kept: a sitemap file may hold 50 MB
 
 
-HEAD = 300_000  # bytes of a body its markers are looked for in
+HEAD = 1_000_000  # bytes of a page read for markers and data; the parsing over it is linear
+REQUEST_MOST = 90  # s for one request in all: httpx's timeout counts per read, and a server can trickle
+SITEMAP_MOST = 60_000_000  # bytes a gzipped sitemap may unpack to (the protocol allows 50 MB)
 
 
 REDIRECTS = 5

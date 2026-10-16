@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,16 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def stem_of(home: str) -> str:
+    """A report's file name from the site's host: letters, digits, dots and dashes only, no port, no userinfo.
+    The host comes from the site's own redirects, so it is never used as it is."""
+    try:
+        host = urlsplit(home).hostname or ""
+    except ValueError:
+        host = ""
+    return re.sub(r"[^a-z0-9.-]", "_", host.lower()).strip("._")[:100] or "site"
+
+
 def load_report(path: Path) -> dict[str, Any] | None:
     """An earlier report's findings, or None when the file is not one."""
     try:
@@ -76,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         products=args.products,
     )
     findings = asyncio.run(recon.run())
-    host = urlsplit(findings["home"]).netloc
+    host = stem_of(findings["home"])
     source = args.compare or previous_report(args.out, host)
     if earlier is None and source:
         earlier = load_report(Path(source))

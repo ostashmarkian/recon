@@ -2,10 +2,10 @@
 made-up addresses, listings, catalogue sources, freshness."""
 
 import contextlib
-import gzip
 import html as entities
 import json
 import re
+import zlib
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -38,28 +38,25 @@ PRODUCT_HINT = re.compile(
 HREF = re.compile(r"""href\s*=\s*["']([^"'#]+)""", re.I)
 
 
-TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+TITLE = re.compile(r"<title[^<>]*>([^<]*)</title>", re.I)
 
 
 GENERATOR = re.compile(
-    r"""<meta[^>]+name=["']generator["'][^>]+content=["']([^"']+)"""
-    r"""|<meta[^>]+content=["']([^"']+)["'][^>]+name=["']generator["']""",
+    r"""<meta[^<>]+name=["']generator["'][^<>]+content=["']([^"']+)"""
+    r"""|<meta[^<>]+content=["']([^"']+)["'][^<>]+name=["']generator["']""",
     re.I,
 )
 
 
-LOC = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.S)
+LOC = re.compile(r"<loc>\s*([^<]*?)\s*</loc>")
 
 
-LASTMOD = re.compile(r"<lastmod>\s*(.*?)\s*</lastmod>", re.S)
-
-
-LD_JSON = re.compile(r"""<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""", re.I | re.S)
+LASTMOD = re.compile(r"<lastmod>\s*([^<]*?)\s*</lastmod>")
 
 
 ITEMPROP = re.compile(
-    r"""<[^>]*\bitemprop=["'](mpn|sku|gtin\d*|productID|brand|price|priceCurrency|availability|inventoryLevel)"""
-    r"""["'][^>]*>""",
+    r"""<[^<>]*\bitemprop=["'](mpn|sku|gtin\d*|productID|brand|price|priceCurrency|availability|inventoryLevel)"""
+    r"""["'][^<>]*>""",
     re.I,
 )
 
@@ -67,13 +64,10 @@ ITEMPROP = re.compile(
 CONTENT = re.compile(r"""\bcontent=["']([^"']*)["']""", re.I)
 
 
-META = re.compile(r"""<meta[^>]+(?:property|name)=["']((?:og|product):[a-z_:]+)["'][^>]*>""", re.I)
+META = re.compile(r"""<meta[^<>]+(?:property|name)=["']((?:og|product):[a-z_:]+)["'][^<>]*>""", re.I)
 
 
-SCRIPTS = re.compile(r"<(script|style|noscript)\b.*?</\1>", re.I | re.S)
-
-
-TAG = re.compile(r"<[^>]+>")
+TAG = re.compile(r"<[^<>]+>")
 
 
 # What a product page says in words, in the shops' languages; a label is shown with what follows it.
@@ -143,16 +137,59 @@ RATE_HEADER = re.compile(r"^(?:x-)?rate-?limit|^retry-after$", re.I)
 CACHE_HEADERS = ("cf-cache-status", "x-cache", "x-cache-status", "x-proxy-cache", "x-varnish-cache")
 
 
-APP_ROOT = re.compile(r"""<div[^>]+id=["'](?:root|app|__next|__nuxt|svelte)["'][^>]*>\s*</div>""", re.I)
+APP_ROOT = re.compile(r"""<div[^<>]+id=["'](?:root|app|__next|__nuxt|svelte)["'][^<>]*>\s*</div>""", re.I)
 
 
 PAGE_LINK = re.compile(r"([?&](?:page|p|pg|pagenumber|page_number|strana|seite|pagina)=)(\d+)|(/page/)(\d+)", re.I)
 
 
+def blocks(html: str, tags: tuple[str, ...]) -> list[tuple[str, int, int, int]]:
+    """(tag, where it opens, where its body starts, where it closes) of every <tag>...</tag> in `html`,
+    found by scanning, never by backtracking: a page of a thousand unclosed tags stays linear."""
+    low, at = html.lower(), 0
+    found: list[tuple[str, int, int, int]] = []
+    nexts = {tag: low.find(f"<{tag}", 0) for tag in tags}
+    while True:
+        for tag in tags:  # each tag's next opening, moved on only when passed
+            while 0 <= nexts[tag] < at:
+                nexts[tag] = low.find(f"<{tag}", at)
+        open_at, tag = min(((n, tag) for tag, n in nexts.items() if n >= 0), default=(-1, ""))
+        if open_at < 0:
+            return found
+        body = low.find(">", open_at)
+        close = low.find(f"</{tag}", body) if body >= 0 else -1
+        if close < 0:  # unclosed: the rest of the page is inside it
+            found.append((tag, open_at, (body + 1) if body >= 0 else len(html), len(html)))
+            return found
+        found.append((tag, open_at, body + 1, close))
+        end = low.find(">", close)
+        at = (end + 1) if end >= 0 else len(html)
+
+
+def visible_text(html: str) -> str:
+    """The words of a page: scripts, styles and noscripts dropped, tags dropped, entities decoded, spaces collapsed."""
+    parts, at = [], 0
+    for _, open_at, _, close in blocks(html, ("script", "style", "noscript")):
+        parts.append(html[at:open_at])
+        end = html.find(">", close)
+        at = (end + 1) if end >= 0 else len(html)
+    parts.append(html[at:])
+    return " ".join(entities.unescape(TAG.sub(" ", " ".join(parts))).split())
+
+
+def gunzip(body: bytes, most: int) -> bytes:
+    """`body` unpacked, at most `most` bytes: a gzip bomb raises ValueError instead of filling the memory."""
+    unpack = zlib.decompressobj(zlib.MAX_WBITS | 16)
+    out = unpack.decompress(body, most)
+    if unpack.unconsumed_tail:
+        raise ValueError(f"over {most:,} bytes unpacked")
+    return out
+
+
 def read_sitemap(body: bytes) -> tuple[str, list[str], list[str]]:
     """("index" | "urls", the addresses it lists, its lastmods)."""
     if body[:2] == b"\x1f\x8b":
-        body = gzip.decompress(body)
+        body = gunzip(body, settings.SITEMAP_MOST)
     text = body.decode("utf-8", "replace")
     return ("index" if "<sitemapindex" in text[:2000] else "urls"), LOC.findall(text), LASTMOD.findall(text)
 
@@ -178,7 +215,13 @@ def ld_products(html: str) -> list[dict[str, Any]]:
                 if isinstance(value, (list, dict)):
                     walk(value)
 
-    for block in LD_JSON.findall(html):
+    scripts = blocks(html, ("script",))
+    lds = [
+        html[start:close]
+        for _, open_at, start, close in scripts
+        if "application/ld+json" in html[open_at:start].lower()
+    ]
+    for block in lds:
         try:
             walk(json.loads(block.strip()))
         except ValueError:
@@ -218,7 +261,7 @@ def product_fields(p: dict[str, Any]) -> dict[str, Any]:
 
 def product_data(a: Answer) -> dict[str, Any]:
     """What a product page carries: JSON-LD, microdata, product meta tags, and labels in its words."""
-    html = a.text
+    html = a.head
     products = ld_products(html)
     jsonld = {k: v for k, v in product_fields(products[0]).items() if v not in (None, "")} if products else {}
     microdata = {}
@@ -238,7 +281,7 @@ def product_data(a: Answer) -> dict[str, Any]:
         for k, v in meta.items()
         if k.startswith("product:") or k in ("og:type", "og:price:amount", "og:price:currency")
     }
-    words = " ".join(entities.unescape(TAG.sub(" ", SCRIPTS.sub(" ", html))).split())
+    words = visible_text(html)
     labels: dict[str, list[str]] = {}
     for name, pattern in LABELS.items():
         seen = [words[m.start() : m.end() + 50] for m in pattern.finditer(words)]
@@ -291,7 +334,7 @@ def sources_of(answers: Iterable[Answer]) -> dict[str, Any]:
     """Catalogue sources the pages point to: search services, page-data blobs, API paths."""
     services, blobs, endpoints = {}, [], []
     for a in answers:
-        text = a.text
+        text = a.head
         low = text.lower()
         for name, needles in SEARCH_SERVICES:
             hit = next((n for n in needles if n in low), None)
@@ -354,7 +397,7 @@ def freshness(answers: Iterable[Answer | None]) -> dict[str, Any]:
 def drawn(a: Answer) -> dict[str, Any]:
     """Whether a page's HTML holds little but a JavaScript app: its visible
     text, and an empty app root."""
-    words = " ".join(TAG.sub(" ", SCRIPTS.sub(" ", a.head)).split())
+    words = visible_text(a.head)
     root = bool(APP_ROOT.search(a.head))
-    code = bool(re.search(r"<script(?![^>]*application/ld\+json)", a.head, re.I))
+    code = bool(re.search(r"<script(?![^<>]*application/ld\+json)", a.head, re.I))
     return {"text": len(words), "empty_root": root, "drawn": root or (len(words) < 100 and code)}

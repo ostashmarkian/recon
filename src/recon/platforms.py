@@ -7,9 +7,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from urllib.parse import quote
 
-from . import settings
 from .clients import Answer
-from .pages import GENERATOR, SCRIPTS, TAG
+from .pages import GENERATOR, visible_text
 
 # (platform, markers): where a marker is looked for - "html" (as written),
 # "header" ("name: value" lowercased), "cookie" (a name it starts) or
@@ -117,7 +116,7 @@ def api_says(name: str, a: Answer) -> str:
     if a.status != 200:
         return ""
     if name == "OpenCart":
-        found = OPENCART_TOTAL.search(" ".join(TAG.sub(" ", SCRIPTS.sub(" ", a.head)).split()))
+        found = OPENCART_TOTAL.search(visible_text(a.head))
         return f"the empty search counts {found.group(1).strip()}" if found else "no 'of N (' counter on the page"
     try:
         data = json.loads(a.body)
@@ -156,7 +155,7 @@ def api_says(name: str, a: Answer) -> str:
 
 def markers_found(markers: Iterable[tuple[str, str]], home: Answer, robots_text: str) -> list[str]:
     lines = "\n".join(f"{k}: {v}" for k, v in home.headers.items()).lower()
-    html = home.text[: settings.BODY_KEPT]
+    html = home.head
     found = []
     for where, needle in markers:
         hit = (
@@ -183,5 +182,5 @@ def platforms_of(
             note = next((n for n in names if n.lower().startswith(name.lower())), None)
             platforms.append((name, found, note))
     stacks = [(name, found) for name, markers in STACKS if (found := markers_found(markers, home, robots_text))]
-    generator = GENERATOR.search(home.text[: settings.BODY_KEPT])
+    generator = GENERATOR.search(home.head)
     return platforms, stacks, (generator.group(1) or generator.group(2)) if generator else None
