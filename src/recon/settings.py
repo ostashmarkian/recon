@@ -15,6 +15,17 @@ CHROME_UA = (
 
 
 # The first one let in on every page is the way in, so the plainest come first.
+# What the report calls each client: PHA is post_handshake_auth, Python's other TLS ClientHello;
+# curl_cffi is libcurl sending a browser's TLS and HTTP/2 fingerprint
+CLIENT_NAMES = {
+    "httpx-h2": "httpx HTTP/2",
+    "httpx-h1": "httpx HTTP/1.1",
+    "httpx-h2-pha": "httpx HTTP/2 + PHA",
+    "httpx-h1-pha": "httpx HTTP/1.1 + PHA",
+    "curl-chrome": "curl_cffi as Chrome",
+    "curl-safari": "curl_cffi as Safari",
+    "curl-firefox": "curl_cffi as Firefox",
+}
 CLIENTS = (
     "httpx-h2",
     "httpx-h1",
@@ -33,7 +44,7 @@ UAS = {
     "python-requests": "python-requests/2.32.3",
     "python-httpx": "python-httpx/0.28.1",
     "Python-urllib": "Python-urllib/3.12",
-    "curl": "curl/8.9.1",
+    "curl CLI": "curl/8.9.1",
     "Wget": "Wget/1.24.5",
     "Scrapy": "Scrapy/2.11.2 (+https://scrapy.org)",
     "GPTBot": "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)",

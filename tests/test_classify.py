@@ -20,6 +20,18 @@ ANSWERS = [
         "blocked",
     ),
     ("Akamai", Answer("u", 403, {"server": "AkamaiGHost"}, (), b"Access Denied"), "blocked"),
+    (
+        "Akamai's page, its markers written as HTML entities",
+        Answer(
+            "u",
+            403,
+            {"content-type": "text/html"},
+            (),
+            b"<TITLE>Access Denied</TITLE>Reference&#32;&#35;18&#46;7f0c<P>https&#58;&#47;&#47;errors&#46;edgesuite"
+            b"&#46;net&#47;18</P>",
+        ),
+        "blocked",
+    ),
     ("CloudFront WAF", Answer("u", 403, {"server": "CloudFront"}, (), b"Request blocked."), "blocked"),
     ("AWS WAF captcha", Answer("u", 202, {"x-amzn-waf-action": "captcha"}), "challenge"),
     ("DataDome", Answer("u", 403, {}, (), b"geo.captcha-delivery.com"), "challenge"),

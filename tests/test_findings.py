@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from recon.findings import compare, previous_report
+from recon.findings import compare, guards_named, previous_report
 from recon.notes import notes_on, read_notes
 
 BEFORE = {
@@ -41,6 +41,15 @@ def test_another_deeper_page_is_no_change_in_protection() -> None:
     on_x = dict(AFTER, protection=["clients turned away: httpx-h2 challenge on /, /x"])
     on_y = dict(AFTER, protection=["clients turned away: httpx-h2 challenge on /, /y"])
     assert compare(on_x, on_y) == []
+
+
+def test_akamai_bot_manager_named_from_its_cookies() -> None:
+    f = {"vendors": {"Akamai": ["cookie ak_bmsc (Bot Manager)", "cookie bm_mi (Bot Manager)"], "Fastly (CDN)": ["via"]}}
+    assert guards_named(f) == ["Akamai Bot Manager (cookie ak_bmsc, cookie bm_mi)"]
+
+
+def test_a_change_of_level() -> None:
+    assert compare(dict(AFTER, level={"level": 2}), dict(AFTER, level={"level": 3})) == ["protection level: 2 -> 3"]
 
 
 def test_previous_report(tmp_path: Path) -> None:

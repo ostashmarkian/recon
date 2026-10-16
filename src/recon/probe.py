@@ -96,6 +96,7 @@ from .findings import (
     not_found_findings,
     percentile,
     protection,
+    protection_level,
     summary,
     ua_filter,
     way_in,
@@ -207,6 +208,7 @@ class Recon:
         f["ua_filter"] = ua_filter(f)
         await self.burst()
         f["protection"] = protection(f)
+        f["level"] = protection_level(f)
         f["way_in"] = way_in(f)
         f["rate_headers"] = rate_headers(self.seen)
         f["notes"] = notes_on(self.host, self.notes)

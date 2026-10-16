@@ -4,7 +4,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import settings
-from .findings import Findings
+from .findings import Findings, client_name
 from .sample import SAMPLE_FIELDS
 
 
@@ -94,8 +94,15 @@ def report(f: Findings) -> str:
     session, burst = f.get("session") or {}, f.get("burst") or {}
 
     out += ["## Verdict", ""]
-    out.append("- **Protection:** " + ("none found" if not f["protection"] else "; ".join(f["protection"])))
-    if f.get("ua_filter"):
+    level = f.get("level") or {}
+    if level:
+        out.append(f"- **Protection: level {level['level']} of 5, {level['label']}.** {level['said']}")
+        if f["protection"]:
+            out.append("  - seen: " + "; ".join(f["protection"]))
+        out.append(f"  - not seen in one run: {level['unseen']}")
+    else:
+        out.append("- **Protection:** " + ("none found" if not f["protection"] else "; ".join(f["protection"])))
+    if f.get("ua_filter") and level.get("level") != 2:  # level 2 is this filter, said above
         out.append(f"- **User-Agent filter:** {f['ua_filter']} (not protection here: the burst sends a browser's)")
     out.append(f"- **Way in:** {f['way_in']}")
     if session.get("skipped"):
@@ -196,12 +203,19 @@ def report(f: Findings) -> str:
         ]
         for kind in dict.fromkeys(r["client"] for r in f["clients"]):
             row = {r["page"]: r for r in f["clients"] if r["client"] == kind}
-            out.append(f"| {kind} | " + " | ".join(cell(row[p]) if p in row else "" for p in pages) + " |")
-        out += ["", f"Deeper page ({f['page_from']}): {f['page']}", ""]
+            out.append(f"| {client_name(kind)} | " + " | ".join(cell(row[p]) if p in row else "" for p in pages) + " |")
+        out += [
+            "",
+            "PHA: httpx with `post_handshake_auth`, Python's other TLS ClientHello. curl_cffi: libcurl sending"
+            " a browser's TLS and HTTP/2 fingerprint, with that browser's own User-Agent.",
+            "",
+            f"Deeper page ({f['page_from']}): {f['page']}",
+            "",
+        ]
 
     if f.get("uas"):
         out += [
-            f"## User-Agents, through {f['uas_through']}, on the home page",
+            f"## User-Agents, through {client_name(f['uas_through'])}, on the home page",
             "",
             "| User-Agent | answer |",
             "|---|---|",
@@ -221,7 +235,7 @@ def report(f: Findings) -> str:
                 f"cookies: {', '.join(b['cookies']) or 'none'}"
             )
             for c in b["clearance_carried"]:
-                out.append(f"- its cf_clearance + User-Agent on {c['client']}: {cell(c)}")
+                out.append(f"- its cf_clearance + User-Agent on {client_name(c['client'])}: {cell(c)}")
         out.append("")
 
     if session and not session.get("skipped"):
@@ -234,7 +248,7 @@ def report(f: Findings) -> str:
 
     if burst.get("steps"):
         out += [
-            f"## Burst, {burst['client']} over {burst['http']}",
+            f"## Burst, {client_name(burst['client'])} over {burst['http']}",
             "",
             "| at a time | asked | answered | per s | p50 s | p95 s | answers |",
             "|---|---|---|---|---|---|---|",

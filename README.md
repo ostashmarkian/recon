@@ -52,15 +52,15 @@ Python 3.12+.
 The report opens with a verdict. This one is from a real shop behind
 Cloudflare, abridged, with the shop's identity replaced:
 
-> - **Protection:** in front: Cloudflare; clients turned away: httpx-h2 challenge on /, /1000000001; httpx-h1 challenge on /, /1000000001; httpx-h2-pha challenge on /, /1000000001
-> - **Way in:** httpx-h1-pha, a browser User-Agent, no cookies (a session lock)
-> - **Session lock:** yes: 2.3/s with one cookie jar, 5.15/s with none, 4 at a time
+> - **Protection: level 3 of 5, a filter by fingerprint.** Cloudflare turns away httpx HTTP/2, httpx HTTP/1.1, httpx HTTP/2 + PHA (challenge) with a browser User-Agent; let in: httpx HTTP/1.1 + PHA, curl_cffi as Chrome, curl_cffi as Safari, curl_cffi as Firefox. Python's own TLS is what is turned away: the TLS fingerprint decides. httpx with PHA passes over HTTP/1.1 only, so the HTTP/2 fingerprint counts too. A real browser is let in and gets cf_clearance, but the cookie does not carry over to the clients.
+> - **Way in:** httpx HTTP/1.1 + PHA, a browser User-Agent, no cookies (a session lock)
+> - **Session lock:** yes: 1.98/s with one cookie jar, 6.3/s with none, 4 at a time
 > - **Burst:** skipped (protection found)
-> - **Product data:** JSON-LD mpn `PN-0001-A`, sku `1000000001`, brand `ACME COMPONENTS`, price `19.9800`, currency `USD`, availability `InStock`; no gtin
+> - **Product data:** JSON-LD mpn `PN-0001-A`, sku `1000000001`, brand `ACME COMPONENTS`, price `19.9800`, currency `USD`, availability `InStock`; no gtin; words for part number, maker, stock
 > - **Product sample:** 10 of 10 pages read; mpn 10/10, sku 10/10, price 10/10; currency USD; a stock number on 0; no trap seen
 > - **Not-found pages:** a made-up product redirects to /Errors/GenericError; a made-up path redirects to /Errors/GenericError
 > - **Freshness:** cache DYNAMIC 11/11; Cache-Control `private`
-> - **Sitemap:** 195,151 addresses in 8 files read
+> - **Sitemap:** 195,151 addresses in 8 files read, lastmod 2025-01-13 to 2026-01-13
 
 Every line is backed by tables of the actual answers below it: which client
 got which status on which page, what each User-Agent got, what Chrome saw, each
@@ -162,6 +162,20 @@ flowchart LR
     K --> L
 ```
 
+The verdict opens with a protection level, from what the run saw:
+
+| Level | Meaning |
+|---|---|
+| 0 | nothing in front, nothing refused |
+| 1 | a service in front (a CDN, an anti-bot service), nothing refused |
+| 2 | a filter by name: bot and tool User-Agents refused, any client with a browser User-Agent let in |
+| 3 | a filter by fingerprint: some clients turned away even with a browser User-Agent (TLS, HTTP/2), others let in |
+| 4 | a challenge for every client: only a real browser gets in |
+| 5 | nothing let in, not even a browser |
+
+It says who refused, what got through, and what one run cannot see, such as
+limits over a long session.
+
 Every answer is classified the same way. It is `ok`, `redirect`, `gone`,
 `server-error`, a refusal (`challenge`, `blocked`, `refused`, `limited`) with
 who refused it, or no answer (`dropped`, `error`).
@@ -209,7 +223,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 85 tests, offline, ~40 s
+pytest                                       # 88 tests, offline, ~45 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```

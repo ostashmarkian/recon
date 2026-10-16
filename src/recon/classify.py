@@ -1,6 +1,7 @@
 """What an answer says - a verdict (ok, a refusal, no answer) and who gave
 it - and which services stand in front of a site."""
 
+import html as entities
 import re
 from collections.abc import Iterable
 
@@ -87,6 +88,7 @@ def judge(a: Answer) -> tuple[str, str]:
     if "x-sucuri-block" in h or "sucuri website firewall" in low:
         return "blocked", "Sucuri"
     if s in (403, 429, 503):
+        plain = entities.unescape(low)  # Akamai writes "Reference&#32;&#35;18..." and "errors&#46;edgesuite&#46;net"
         if any(k in low for k in ("<title>just a moment", "cf-chl", "cf_chl", "jschl")):
             return "challenge", "Cloudflare"
         if "cloudflare" in server and any(
@@ -95,8 +97,8 @@ def judge(a: Answer) -> tuple[str, str]:
             return "blocked", "Cloudflare"
         if (
             "akamaighost" in server
-            or "errors.edgesuite.net" in low
-            or ("access denied" in low and "reference #" in low)
+            or "errors.edgesuite.net" in plain
+            or ("access denied" in plain and "reference #" in plain)
         ):
             return "blocked", "Akamai"
         if ("cloudfront" in server or "x-amz-cf-id" in h) and "request blocked" in low:
@@ -144,9 +146,11 @@ def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:
         for name in ("__cf_bm", "cf_clearance"):
             if name in cookies:
                 add("Cloudflare", f"cookie {name}")
-        if "akamaighost" in server or any(k.startswith("x-akamai") or k == "akamai-grn" for k in h):
-            add("Akamai", "server or header")
-        for name in ("_abck", "bm_sz", "ak_bmsc"):
+        if "akamaighost" in server:
+            add("Akamai", "server: AkamaiGHost")
+        for name in (k for k in h if k.startswith("x-akamai") or k == "akamai-grn"):
+            add("Akamai", f"header {name}")
+        for name in ("_abck", "bm_sz", "ak_bmsc", "bm_mi", "bm_sv"):
             if name in cookies:
                 add("Akamai", f"cookie {name} (Bot Manager)")
         if "x-iinfo" in h or h.get("x-cdn", "").lower() in ("imperva", "incapsula"):

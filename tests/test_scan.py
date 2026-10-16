@@ -21,13 +21,14 @@ class TestOpenSite:
     def test_protection_and_way_in(self, open_site):
         f, text, browser, _ = open_site
         assert f["protection"] == []
-        assert f["way_in"] == "httpx-h2, a browser User-Agent, cookies or none alike"
+        assert f["way_in"] == "httpx HTTP/2, a browser User-Agent, cookies or none alike"
+        assert f["level"]["level"] == 0
+        assert "**Protection: level 0 of 5, none seen.** Nothing in front, nothing refused." in text
         assert f["let_in"] == list(settings.CLIENTS)
         assert (f["browser"], browser.urls) == (None, []), "no browser without a challenge"
         assert len(f["uas"]) == len(settings.UAS)
         assert f["ua_filter"] is None
         assert f["session"]["lock"] is False
-        assert "**Protection:** none found" in text
 
     def test_pages_and_sitemap(self, open_site):
         f, *_ = open_site
@@ -115,7 +116,11 @@ def test_cloudflare_by_tls():
     """Cloudflare challenging httpx: curl_cffi the way in, no burst."""
     f, _, browser = scan(FakeSite(guard="cloudflare-tls"))
     assert f["let_in"] == ["curl-chrome", "curl-safari", "curl-firefox"]
-    assert f["way_in"] == "curl-chrome, its own User-Agent, cookies or none alike"
+    assert f["way_in"] == "curl_cffi as Chrome, its own User-Agent, cookies or none alike"
+    level = f["level"]
+    assert (level["level"], level["label"]) == (3, "a filter by fingerprint")
+    assert "Python's own TLS is what is turned away: the TLS fingerprint decides." in level["said"]
+    assert "A real browser is let in and gets cf_clearance, but the cookie does not carry over" in level["said"]
     assert browser.urls == [f"{BASE}/"], "the browser opened on the page challenged"
     assert {c["verdict"] for c in f["browser"]["clearance_carried"]} == {"challenge"}
     assert [p.split(":")[0] for p in f["protection"]] == ["in front", "clients turned away"]
@@ -129,6 +134,7 @@ def test_guard_letting_every_probe_in():
     assert (f["let_in"], browser.urls) == (list(settings.CLIENTS), [])
     assert f["protection"] == ["in front: Cloudflare"]
     assert f["burst"] == {"skipped": ["in front: Cloudflare"]}
+    assert (f["level"]["level"], f["level"]["label"]) == (1, "a service in front, nothing refused")
 
 
 def test_user_agent_filter_is_not_protection():
@@ -136,7 +142,10 @@ def test_user_agent_filter_is_not_protection():
     assert f["ua_filter"] == "refused GPTBot, ClaudeBot"
     assert f["protection"] == []
     assert [s["at_once"] for s in f["burst"]["steps"]] == [1, 2, 4, 8, 16]
-    assert "- **User-Agent filter:** refused GPTBot, ClaudeBot (not protection" in text
+    assert "**Protection: level 2 of 5, a filter by name.** The site refuses User-Agents by name" in text
+    assert "- **User-Agent filter:**" not in text, "level 2 is the filter: said once"
+    assert f["level"]["level"] == 2
+    assert f["level"]["said"].startswith("The site refuses User-Agents by name (refused GPTBot, ClaudeBot); all 7")
 
 
 def test_crawl_delay():
@@ -198,9 +207,16 @@ def test_nothing_let_in():
 
     f, text, _ = scan(Wall(), browser=FakeBrowser(fail=True))
     assert f["way_in"] == "none found: no client let in"
+    assert (f["level"]["level"], f["level"]["label"]) == (5, "nothing let in")
+    assert "The browser could not run (RuntimeError: Chrome is not installed)." in f["level"]["said"]
     assert "Not run on" in text and "Chrome is not installed" in text
     assert f["session"]["skipped"] == "no client let in"
     assert "no client let in" in f["burst"]["skipped"]
+
+    f, text, _ = scan(Wall(), burst=False)  # a browser that passes: level 4
+    assert (f["level"]["level"], f["level"]["label"]) == (4, "a challenge for every client")
+    assert f["level"]["said"].startswith("Cloudflare challenges every client")
+    assert "A real browser is let in and gets cf_clearance" in f["level"]["said"]
 
 
 def test_robots_txt_keeps_pages_out_of_the_pool():

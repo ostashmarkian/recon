@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased: the first update after 1.0.0
+
+- The verdict opens with a protection level from 0 (none seen) to 5 (nothing let in): who refused, what got
+  through, whether a real browser's cookie carries over, and what one run cannot see.
+- Akamai Bot Manager named from its cookies (`ak_bmsc`, `bm_mi`, `bm_sv`); Akamai's block page recognised with its
+  markers written as HTML entities (before, it showed as a plain refusal).
+- Clients named in plain words in the report (`curl_cffi as Chrome`, `httpx HTTP/2 + PHA`), with a legend; the
+  curl User-Agent is `curl CLI`, so it is not mistaken for curl_cffi.
+- The User-Agent filter line is not repeated when the protection level already says it.
+- 88 tests.
+
 ## 1.0.0 - 2026-10-15
 
 The first release.
