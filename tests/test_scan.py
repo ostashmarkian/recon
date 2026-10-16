@@ -50,6 +50,9 @@ class TestOpenSite:
         assert (burst["asked"], burst["distinct"]) == (350, 41)
         assert "no limit seen in 350 requests" in text
         assert f["requests"] == len(site.asked), "every request counted"
+        assert site.most_in_flight <= 16, "never more than 16 at once"
+        assert site.posts == [], "nothing posted: no platform here asks with a body"
+        assert burst["stop_kind"] is None
 
     def test_product_page(self, open_site):
         product = open_site[0]["product"]
@@ -178,6 +181,7 @@ class TestBurstStops:
         burst = f["burst"]
         assert [s["at_once"] for s in burst["steps"]] == [1, 2, 4]
         assert burst["stop"].startswith("429 limited (Retry-After 60)")
+        assert burst["stop_kind"] == "refused: limited"
         assert burst["steps"][-1]["answers"].get("429 limited", 0) <= 4, "no more sent than were in flight"
         assert burst["after"]["verdict"] == "ok", "asked again RECOVER s later"
         assert "stopped after" in text and "at 4 at a time" in text
@@ -193,8 +197,10 @@ class TestBurstStops:
         assert "slowed" in (burst["stop"] or "")
 
     def test_at_8_over_http1(self):
-        burst = scan(FakeSite(http="h1"))[0]["burst"]
+        site = FakeSite(http="h1")
+        burst = scan(site)[0]["burst"]
         assert [s["at_once"] for s in burst["steps"]] == [1, 2, 4, 8]
+        assert site.most_in_flight <= 8, "never more than 8 connections over HTTP/1.1"
 
     def test_never_with_no_burst(self):
         assert scan(FakeSite(), burst=False)[0]["burst"] == {"skipped": ["--no-burst"]}

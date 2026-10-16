@@ -9,7 +9,43 @@
 - Clients named in plain words in the report (`curl_cffi as Chrome`, `httpx HTTP/2 + PHA`), with a legend; the
   curl User-Agent is `curl CLI`, so it is not mistaken for curl_cffi.
 - The User-Agent filter line is not repeated when the protection level already says it.
-- 88 tests.
+
+From an audit (2026-10-16):
+
+- **Politeness.** robots.txt is read by recon's own RFC 9309 parser, the same on every
+  Python. It honours comments, indentation, a BOM, `*` and `$`, and the longest
+  match; redirects are followed. A robots.txt that cannot be read disallows
+  everything. A Crawl-delay is read wherever its line sits; over 60 s, the run
+  stops after robots.txt. Cart and checkout links, including those in a query
+  string, are never asked. A refusal in any step keeps the burst off. Platform
+  APIs, guessed sitemaps and not-found probes are asked only where robots.txt
+  allows.
+- **Safety of the tool:**
+  - bodies are read up to a limit, decoded, so a compression bomb is cut;
+  - a gzipped sitemap unpacks to a limit;
+  - each request has one deadline;
+  - parsing hostile HTML is linear: 1 MB of unclosed tags takes under a second;
+  - the report's file name keeps only safe characters of the host, so a redirect
+    can no longer move the report out of `--out`;
+  - findings keep light copies of the answers.
+- **Robustness.** Each step runs isolated: a failure goes into an Errors section
+  and the other steps go on. An unparseable address, deep JSON-LD, zone-less
+  Last-Modified dates, a lone surrogate and a foreign `--compare` file no
+  longer break the run.
+- **Verdicts:**
+  - a home-page redirect to a captcha or another site is not followed;
+  - other 4xx are `client-error`, not `ok`, and 408 is a lost answer;
+  - a block redirect is judged by its path only;
+  - Imperva's script on a normal page and `x-datadome` on a 404 are not
+    challenges;
+  - robots.txt is never a main page;
+  - the level is consistent with `let_in`, names services only, and calls
+    refusals seen only under load a rate limit;
+  - `&amp;` in sitemaps is decoded, and links come from `<a href>` only;
+  - comparisons ignore byte counts and timings.
+- The real httpx and curl_cffi clients are tested against a local server, and the
+  concurrency limits and the only POST are tested.
+- 148 tests.
 
 ## 1.0.0 - 2026-10-15
 

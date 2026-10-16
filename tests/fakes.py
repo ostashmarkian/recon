@@ -99,6 +99,8 @@ class FakeSite:
         self.home_captcha = home_captcha  # the home page redirects to a captcha page
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
+        self.most_in_flight = 0  # the most requests out at once
+        self.posts: list[str] = []  # paths asked with a body
         self.session = asyncio.Lock() if lock else None
 
     def answer(self, client: FakeClient, url: str, headers: dict) -> Answer:
@@ -166,6 +168,9 @@ class FakeClient:
             async with site.session:
                 await asyncio.sleep(0.05)
         site.in_flight += 1
+        site.most_in_flight = max(site.most_in_flight, site.in_flight)
+        if data is not None:
+            site.posts.append(url.removeprefix(BASE))
         try:
             await asyncio.sleep(0.01 * site.in_flight**2 if site.slow else 0.02)
         finally:

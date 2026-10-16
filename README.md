@@ -17,7 +17,8 @@ would by hand, and writes up what it found. It answers:
 - where its catalogue lives;
 - whether its product data is clean enough to use.
 
-One run takes about a minute and 100 polite requests.
+One run takes about a minute and about 100 polite requests, plus up to 350 for the load test on sites
+that nothing protects.
 
 ## Contents
 
@@ -177,8 +178,8 @@ It says who refused, what got through, and what one run cannot see, such as
 limits over a long session.
 
 Every answer is classified the same way. It is `ok`, `redirect`, `gone`,
-`server-error`, a refusal (`challenge`, `blocked`, `refused`, `limited`) with
-who refused it, or no answer (`dropped`, `error`).
+`client-error`, `server-error`, a refusal (`challenge`, `blocked`, `refused`,
+`limited`) with who refused it, or no answer (`dropped`, `error`).
 
 The code is a package in `src/recon/`:
 
@@ -192,6 +193,7 @@ The code is a package in `src/recon/`:
 | `sample` | the product sample and its data traps |
 | `findings` | what the findings add up to: protection, the way in, changes since last time |
 | `report` | the Markdown report |
+| `robots` | robots.txt as RFC 9309 reads it, the same on every Python version |
 | `settings` | every tunable in one place |
 | `browser`, `notes`, `cli` | Chrome via patchright, the notes folder, the command |
 
@@ -201,8 +203,16 @@ recon is meant for sites you are allowed to scrape: your own, your clients',
 or public sites whose terms permit it. It is careful by default:
 
 - one request at a time, 0.5 s apart, or slower if robots.txt asks for a
-  `Crawl-delay`; with a Crawl-delay, no concurrent test runs at all;
-- the session test and the burst only touch pages robots.txt allows;
+  `Crawl-delay`; with a Crawl-delay, no concurrent test runs at all. A
+  Crawl-delay over 60 s stops the run after robots.txt, unless you name a pace
+  with `--pause`;
+- robots.txt is read as RFC 9309 asks, redirects followed. If it cannot be read
+  (a server error, a refusal, no answer), every page counts as disallowed.
+  Sitemaps, platform APIs and the not-found probes are asked only where it
+  allows, and so are the pages of the session test, the sample and the burst;
+- links that would change the site's state (add to cart, checkout, a cart
+  route, `action=add`) are never asked;
+- any refusal, in any step, keeps the burst off;
 - **the burst runs only when nothing protects the site.** Any anti-bot service
   in front, a browser-like client turned away, or a Crawl-delay turns it off.
   It stops at the first refusal, dropped connection or slowdown, and waits
@@ -223,7 +233,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 88 tests, offline, ~45 s
+pytest                                       # 148 tests, offline, ~70 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```

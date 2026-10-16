@@ -32,6 +32,8 @@ guards is broken: break the code on purpose once and watch the test fail.
 - **A search service:** a line in `SEARCH_SERVICES` (`pages.py`).
 - **A language:** words for a part number, maker, VAT or stock in `LABELS`
   (`pages.py`); quantity-discount words in `LADDER_WORDS` (`sample.py`).
+- **A robots.txt rule:** `robots.py` follows RFC 9309; a case it reads wrong
+  is a test in `tests/test_robots.py` first.
 - **A tunable:** `settings.py`; code reads it as `settings.NAME`, so tests can
   monkeypatch it.
 

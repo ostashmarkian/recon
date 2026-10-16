@@ -765,6 +765,7 @@ class Recon:
         client = self.make(self.best, ua=self.ua_for(self.best))
         steps: list[dict[str, Any]] = []
         stop: str | None = None
+        stop_kind: str | None = None  # how it stopped, for comparing two reports; stop holds the numbers
         first_p50: float | None = None
         http: str | None = None
         urls = itertools.cycle(self.pool)
@@ -797,16 +798,20 @@ class Recon:
                     a = refused[0]
                     verdict, said = judge(a)
                     stop = f"{a.status} {verdict}{f' ({said})' if said else ''} at {limit} at a time"
+                    stop_kind = f"refused: {verdict}"
                 elif len(lost) >= settings.LOST_MAX:
                     stop = f"{len(lost)} connections lost at {limit} at a time ({judge(lost[0])[1]})"
+                    stop_kind = "connections lost"
                 elif len(failed) > settings.FAILED_SHARE * len(answers):
                     stop = f"{len(failed)} of {len(answers)} answers were server errors at {limit} at a time"
+                    stop_kind = "server errors"
                 elif (
                     first_p50 is not None
                     and p50 is not None
                     and p50 > max(settings.SLOW_FACTOR * first_p50, settings.SLOW_FLOOR)
                 ):
                     stop = f"answers slowed to {p50:.2f}s against {first_p50:.2f}s at {limit} at a time"
+                    stop_kind = "slowed"
                 if stop:
                     break
                 first_p50 = p50 if first_p50 is None else first_p50
@@ -816,6 +821,7 @@ class Recon:
                 "http": http,
                 "steps": steps,
                 "stop": stop,
+                "stop_kind": stop_kind,
                 "asked": asked,
                 "distinct": min(asked, len(self.pool)),
             }

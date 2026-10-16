@@ -67,6 +67,14 @@ def test_refused_only_under_load_is_a_rate_limit() -> None:
     assert "Refused under load in the session test, 4 at a time: a rate limit." in level["said"]
 
 
+def test_a_burst_compared_by_how_it_stopped_not_its_timings() -> None:
+    slow1 = dict(AFTER, burst={"stop": "answers slowed to 1.20s against 0.30s at 8", "stop_kind": "slowed"})
+    slow2 = dict(AFTER, burst={"stop": "answers slowed to 1.45s against 0.28s at 8", "stop_kind": "slowed"})
+    limited = dict(AFTER, burst={"stop": "429 limited at 4", "stop_kind": "refused: limited"})
+    assert compare(slow1, slow2) == []
+    assert compare(slow1, limited) == ["burst: slowed -> refused: limited"]
+
+
 def test_a_change_of_level() -> None:
     assert compare(dict(AFTER, level={"level": 2}), dict(AFTER, level={"level": 3})) == ["protection level: 2 -> 3"]
 

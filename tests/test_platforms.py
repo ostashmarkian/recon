@@ -7,7 +7,7 @@ from fakes import BASE, HOME
 
 from recon.clients import Answer
 from recon.notes import read_notes
-from recon.platforms import api_request, api_says, platforms_of
+from recon.platforms import PLATFORMS, api_request, api_says, platforms_of
 
 
 def test_platforms_stack_generator_and_a_note(tmp_path: Path) -> None:
@@ -67,6 +67,12 @@ SAYS = [
 @pytest.mark.parametrize(("platform", "answer", "said"), [pytest.param(p, a, s, id=n) for n, p, a, s in SAYS])
 def test_api_says(platform: str, answer: Answer, said: str) -> None:
     assert api_says(platform, answer) == said
+
+
+def test_only_bigcommerce_asks_with_a_body() -> None:
+    token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.abc.def"
+    methods = {name: (api_request(name, BASE, token) or ("none",))[0] for name, _ in PLATFORMS}
+    assert {name for name, method in methods.items() if method == "POST"} == {"BigCommerce"}
 
 
 def test_bigcommerce_asks_with_the_pages_token() -> None:
