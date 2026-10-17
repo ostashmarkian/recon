@@ -187,7 +187,7 @@ def report(f: Findings) -> str:
     sm = f.get("sitemap") or {}
     out.append(
         f"- **Sitemap:** {sm.get('addresses', 0):,} addresses in {sm.get('files_read', 0)} files read"
-        + (f", {sm['files_left']} left unread" if sm.get("files_left") else "")
+        + (f"; {sm['files_left']:,} more files named, not read" if sm.get("files_left") else "")
         + (f", lastmod {sm['lastmod'][0]} to {sm['lastmod'][1]}" if sm.get("lastmod") else "")
     )
     for api in f.get("apis", []):

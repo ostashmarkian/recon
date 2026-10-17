@@ -10,14 +10,34 @@ from recon.clients import Answer
 from recon.pages import (
     HREF,
     PRODUCT_HINT,
+    SITEMAP_HINT,
+    by_family,
+    family,
     drawn,
     freshness,
     listing_page,
     made_up,
     product_data,
     read_sitemap,
+    spread,
 )
 from recon.report import freshness_line
+
+
+def test_families_of_addresses_taken_in_turn() -> None:
+    assert family(f"{BASE}/product/12/") == family(f"{BASE}/product/345/") == ("product", 2, True)
+    assert family(f"{BASE}/products/highlights/caps/") == ("products", 3, False)
+    a = [f"{BASE}/a/{n}/" for n in range(3)]
+    b = [f"{BASE}/b/x-{n}/y/" for n in range(2)]
+    assert by_family([*a, *b]) == [a[0], b[0], a[1], b[1], a[2]]
+
+
+def test_spread_picks_from_end_to_end_and_the_preferred_first() -> None:
+    files = [f"{BASE}/sitemap-{n}.xml" for n in range(11)]
+    assert spread(files, 3) == [files[0], files[5], files[10]]
+    assert spread(files, 20) == files
+    named = [f"{BASE}/pages.xml", f"{BASE}/products-1.xml", f"{BASE}/blog.xml", f"{BASE}/products-2.xml"]
+    assert spread(named, 3, SITEMAP_HINT) == [named[1], named[3], named[0]]
 
 
 def test_sitemap_index() -> None:

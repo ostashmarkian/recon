@@ -430,6 +430,33 @@ def test_with_no_deeper_page_robots_txt_is_no_main_page():
     assert f["level"]["level"] != 5
 
 
+def test_indexes_of_indexes_do_not_spend_the_sitemap_budget():
+    """30 indexes under the sitemap: read depth first, a few of each, so the address files are reached."""
+    f, text, _ = scan(FakeSite(nested=30), burst=False)
+    sm = f["sitemap"]
+    assert sm["addresses"] == 40, "both address files read, through the first index"
+    assert sm["files_read"] == 1 + settings.SITEMAP_CHILDREN + 2, "the index, 4 of its indexes, the 2 files once"
+    assert sm["files_named"] == 1 + 30 + 2
+    assert f["pool"] == 41
+    assert "more files named, not read" in text
+
+
+def test_a_product_is_looked_for_in_another_family_of_pages():
+    """50 marketing pages under /products/ outnumber the 40 products: the second try is a product all the same,
+    and the sample is drawn from the products' family."""
+    extra = "".join(f'<a href="/products/highlights/topic-{n}/">x</a>' for n in range(50))
+    f, _, _ = scan(FakeSite(home_extra=extra), burst=False)
+    product = f["product"]
+    assert product["tried"][0].startswith(f"{BASE}/products/highlights/"), "the largest family is tried first"
+    assert product["url"].startswith(f"{BASE}/product/") and len(product["tried"]) == 2
+    assert f["sample"]["coverage"]["mpn"] == f["sample"]["read"] == 10
+
+
+def test_a_product_address_that_redirects_is_followed_once():
+    f, _, _ = scan(FakeSite(), page=f"{BASE}/p/7/", burst=False)
+    assert (f["product"]["url"], f["product"]["found"]) == (f"{BASE}/product/7/", True)
+
+
 def test_sitemap_guessed_when_robots_names_none():
     site = FakeSite(sitemap_at="/xmlsitemap.php")
     f, _, _ = scan(site, burst=False)

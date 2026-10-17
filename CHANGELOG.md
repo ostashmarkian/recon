@@ -18,7 +18,18 @@
   report says at which request and minute, and the level takes it in: a 429 is
   a rate limit, any other refusal is level 4. Its refusal keeps the burst off.
   It runs behind protection too, since it is slower than the rest.
-- 175 tests.
+- **Sitemaps read depth first.** An index's files are read next, four of each
+  picked from end to end, product files first. Indexes of indexes no longer
+  spend the whole budget of 30 files on indexes: a run had read 30 and found 0
+  addresses. Addresses are kept from all over each file, and the report says
+  how many files were named but not read.
+- **Product pages looked for a family at a time.** Addresses of one shape
+  (`/product/123/`) are a family. The tries take one of each in turn, so a
+  shop's marketing pages under `/products/` no longer use up every try, and
+  the sitemap's other pages are tried after the product links. A product
+  address that redirects on the site is followed once. The sample is drawn
+  from the found product's family first.
+- 180 tests.
 
 ## 1.1.0 - 2026-10-17
 

@@ -258,7 +258,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 175 tests, offline, ~85 s
+pytest                                       # 180 tests, offline, ~90 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```

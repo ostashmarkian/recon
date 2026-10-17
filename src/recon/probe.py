@@ -114,8 +114,11 @@ from .pages import (
     ASSET,
     HREF,
     PRODUCT_HINT,
+    SITEMAP_HINT,
     SKIPPED_PATHS,
+    by_family,
     drawn,
+    family,
     freshness,
     listing_page,
     made_up,
@@ -123,6 +126,7 @@ from .pages import (
     rate_headers,
     read_sitemap,
     sources_of,
+    spread,
 )
 from .platforms import api_request, api_says, platforms_of
 from .robots import Robots
@@ -216,6 +220,7 @@ class Recon:
         self.sample_answers: list[Answer] = []
         self.links: list[str] = []
         self.products: list[str] = []
+        self.others: list[str] = []  # the sitemap's pages that do not look like products
         self.pool: list[str] = []
         self.listed: list[str] = []
         self.best: str | None = None
@@ -431,6 +436,9 @@ class Recon:
         products = [u for u in pool if PRODUCT_HINT.search(urlsplit(u).path) or PRODUCT_HINT.search(urlsplit(u).query)]
         # products from all over the sitemap: its first ones can all be one dead corner of the catalogue
         random.Random(0).shuffle(products)
+        # a family at a time: "/products/" can be a shop's marketing pages as well as its products
+        products = by_family(products)
+        self.others = by_family(u for u in listed if u not in set(products))  # the sitemap's other pages
         self.links, self.products = links, products
         self.deep = self.page or next(iter(products or pool), None)
         random.Random(0).shuffle(pool)  # pages from all over the sitemap, not one corner of it
@@ -440,14 +448,17 @@ class Recon:
         f["pool"] = len(pool)
 
     async def sitemaps(self, scout: Client, queue: list[str], guessed: bool = False) -> None:
-        """Every sitemap file robots.txt names, and those its indexes list,
-        SITEMAP_FILES at most: how many addresses, and a sample of them. With
-        none named, SITEMAP_PATHS in turn until one answers."""
+        """The sitemap files robots.txt names, and those their indexes list, SITEMAP_FILES at most: how many
+        addresses, and a sample of them. An index's files are read next, depth first, SITEMAP_CHILDREN of them
+        picked from end to end, product files first: indexes of indexes would spend the whole budget on
+        indexes otherwise. With none named, SITEMAP_PATHS in turn until one answers."""
         read = listed = 0
         found: list[str] = []
         lastmods: list[str] = []
         files: list[dict[str, Any]] = []
-        queue, seen = list(queue), set()
+        queue = spread(list(dict.fromkeys(queue)), len(queue), SITEMAP_HINT)
+        seen: set[str] = set()
+        named = set(queue)  # every file robots.txt or a read index names
         fails = 0  # files in a row that did not answer
         while queue and read < settings.SITEMAP_FILES and fails < settings.SITEMAP_FAILS_MOST:
             url = queue.pop(0)
@@ -473,15 +484,18 @@ class Recon:
                 continue
             files.append({"url": url, "status": a.status, "kind": kind, "addresses": len(locs)})
             if kind == "index":
-                queue.extend(locs)
+                named.update(locs)
+                queue[:0] = [u for u in spread(locs, settings.SITEMAP_CHILDREN, SITEMAP_HINT) if u not in seen]
             else:
                 listed += len(locs)
-                found.extend(locs[: max(0, settings.SAMPLE_URLS - len(found))])
+                room = max(0, settings.SAMPLE_URLS - len(found))
+                found.extend(spread(locs, min(room, settings.SITEMAP_URLS_PER_FILE)))  # from all over each file
                 lastmods.extend(mods)
         self.listed = found
         self.f["sitemap"] = {
             "files_read": read,
-            "files_left": len([u for u in queue if u not in seen]),
+            "files_named": len(named),
+            "files_left": len(named - seen),
             "addresses": listed,
             "lastmod": [min(lastmods), max(lastmods)] if lastmods else None,
             "files": files[:40],
@@ -600,18 +614,25 @@ class Recon:
         self.f["apis"] = apis
 
     async def product(self) -> None:
-        """What a product page carries: the deeper page, or up to PRODUCT_TRIES
-        more product links when it carries nothing."""
+        """What a product page carries: the deeper page, or up to PRODUCT_TRIES more pages when it carries
+        nothing: product links first, then the sitemap's other pages, a family of addresses at a time.
+        A redirect on the site is followed once: /p/12 can stand for /product/12-name/."""
         tried, client, partial = [], None, None
-        candidates = [self.deep, *[u for u in self.products if u != self.deep][: settings.PRODUCT_TRIES]]
+        # products and the sitemap's other pages come a family at a time (by_family), so the tries meet several
+        candidates = [u for u in [*self.products, *self.others] if u != self.deep][: settings.PRODUCT_TRIES]
         try:
-            for url in filter(None, candidates):
+            for url in filter(None, [self.deep, *candidates]):
                 a = self.deep_answer if url == self.deep else None
                 if a is None:
                     if not self.best:
                         break
                     client = client or self.make(self.best, ua=self.ua_for(self.best))
                     a = await self.get(client, url)
+                    self.keep(a)
+                hop = self.same_site(join(url, a.location)) if judge(a)[0] == "redirect" else None
+                if hop and hop != url and self.best:
+                    client = client or self.make(self.best, ua=self.ua_for(self.best))
+                    url, a = hop, await self.get(client, hop)
                     self.keep(a)
                 tried.append(url)
                 if judge(a)[0] != "ok":
@@ -712,7 +733,9 @@ class Recon:
         all: what share carries each field, and the traps in them."""
         f = self.f
         first = (f.get("product") or {}).get("url")
-        urls = list(dict.fromkeys(([first] if first else []) + self.products))[: self.sample_size]
+        # the found product's family first: its kin are products too, where a hint in the address can mislead
+        kin = [u for u in [*self.products, *self.others] if first and family(u) == family(first)]
+        urls = list(dict.fromkeys(([first] if first else []) + kin + self.products))[: self.sample_size]
         if not self.best or not urls or self.sample_size <= 0:
             f["sample"] = {
                 "skipped": "no client let in" if not self.best else "no product links" if not urls else "--products 0"

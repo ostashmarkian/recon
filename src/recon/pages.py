@@ -28,6 +28,42 @@ SKIPPED_PATHS = re.compile(
 )
 
 
+def family(url: str) -> tuple[str, int, bool]:
+    """A page address's shape: its first path segment, how many segments, and whether its last holds a digit.
+    /product/123/ and /product/456/ are one family; /products/highlights/capacitors/ another."""
+    segments = [s for s in urlsplit(url).path.lower().split("/") if s]
+    return (segments[0] if segments else "", len(segments), bool(segments) and any(c.isdigit() for c in segments[-1]))
+
+
+def by_family(urls: Iterable[str]) -> list[str]:
+    """`urls`, one of each family in turn, the largest family first: a few tries meet several kinds of page."""
+    groups: dict[tuple[str, int, bool], list[str]] = {}
+    for url in urls:
+        groups.setdefault(family(url), []).append(url)
+    ordered = sorted(groups.values(), key=len, reverse=True)
+    return [g[i] for i in range(max(map(len, ordered), default=0)) for g in ordered if i < len(g)]
+
+
+# a sitemap file of products, by its name: sitemap_products_1.xml, xmlsitemap.php?type=products, items-3.xml.gz
+SITEMAP_HINT = re.compile(r"product|item|goods|catalog|offer|sku", re.I)
+
+
+def spread(items: list[str], most: int, prefer: re.Pattern[str] | None = None) -> list[str]:
+    """Up to `most` of `items`, those `prefer` matches first; each group picked evenly from its first to its last."""
+
+    def even(group: list[str], k: int) -> list[str]:
+        if k <= 0:
+            return []
+        if len(group) <= k:
+            return group
+        return [group[round(i * (len(group) - 1) / (k - 1))] for i in range(k)] if k > 1 else group[:1]
+
+    first = [u for u in items if prefer and prefer.search(u)]
+    rest = [u for u in items if not (prefer and prefer.search(u))]
+    picked = even(first, most)
+    return picked + even(rest, most - len(picked))
+
+
 ASSET = re.compile(r"\.(jpe?g|png|gif|webp|svg|ico|css|js|pdf|zip|xml|gz|txt|mp4|woff2?)(\?|$)", re.I)
 
 

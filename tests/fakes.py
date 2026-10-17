@@ -101,6 +101,7 @@ class FakeSite:
         sitemap_refused=False,
         home_moved=False,
         block_after=None,
+        nested=0,
     ):
         self.guard, self.refuse_uas, self.lock, self.limit = guard, refuse_uas, lock, limit
         self.drop_after, self.slow, self.http, self.disallow = drop_after, slow, http, disallow
@@ -115,6 +116,7 @@ class FakeSite:
         self.sitemap_refused = sitemap_refused  # the sitemap robots.txt names answers 403, as S3 does
         self.home_moved = home_moved  # the home page redirects to another site
         self.block_after = block_after  # product pages one client may ask before Akamai blocks it
+        self.nested = nested  # the sitemap an index of this many indexes, each of the two files
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
         self.most_in_flight = 0  # the most requests out at once
@@ -136,6 +138,12 @@ class FakeSite:
             return Answer(url, 302, {**h, "location": "/captcha/?from=/"}, (), b"", 0.01, http=self.http)
         if path == "/" and self.home_moved:
             return Answer(url, 301, {**h, "location": "https://moved.test/"}, (), b"", 0.01, http=self.http)
+        if path.startswith("/products/highlights/"):  # a shop's marketing pages under /products/
+            body = b"<html><title>Our ranges</title><p>Capacitors for every need</p></html>"
+            return Answer(url, 200, h, (), body, 0.01, http=self.http)
+        if path.startswith("/p/") and path.strip("/").split("/")[-1].isdigit():  # a short address of a product
+            moved = f"/product/{path.strip('/').split('/')[-1]}/"
+            return Answer(url, 301, {**h, "location": moved}, (), b"", 0.01, http=self.http)
         if path == "/bad-request/":
             return Answer(url, 400, h, (), b"<title>Bad Request</title>", 0.01, http=self.http)
         if path == "/captcha/":
@@ -151,6 +159,11 @@ class FakeSite:
             return Answer(url, 200, h, (), body.encode(), 0.01, http=self.http)
         if path == "/sitemap.xml" and self.sitemap_refused:
             return Answer(url, 403, h, (), b"<title>Forbidden</title>", 0.01, http=self.http)
+        if path == "/sitemap.xml" and self.nested:
+            listed = "".join(f"<sitemap><loc>{BASE}/sitemap-idx-{k}.xml</loc></sitemap>" for k in range(self.nested))
+            return Answer(url, 200, h, (), f"<sitemapindex>{listed}</sitemapindex>".encode(), 0.01, http=self.http)
+        if path.startswith("/sitemap-idx-"):
+            return Answer(url, 200, h, (), sitemap_index(), 0.01, http=self.http)
         if path == (self.sitemap_at or "/sitemap.xml"):
             return Answer(url, 200, h, (), sitemap_index(), 0.01, http=self.http)
         if path == "/sitemap-1.xml":

@@ -75,6 +75,8 @@ REDIRECTS = 5
 
 SITEMAP_FILES = 30
 SITEMAP_FAILS_MOST = 5  # sitemap files in a row that do not answer: the rest are not asked
+SITEMAP_CHILDREN = 4  # files read of one sitemap index, from all over it, products first
+SITEMAP_URLS_PER_FILE = 1000  # addresses kept of one sitemap file, from all over it
 CRAWL_DELAY_MOST = 60.0  # s: robots.txt asking for more stops the run (unless --pause names a pace)
 
 
