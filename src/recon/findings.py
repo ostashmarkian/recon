@@ -49,6 +49,31 @@ LEVELS = (
 )
 
 
+# Bot products that score each client over its session, by what showed them in vendors_of(): a short run can be
+# let in where a long one is challenged. Akamai counts with its Bot Manager cookies; Cloudflare with __cf_bm, which
+# its own reference says Bot Management and Bot Fight Mode set for the bot score; a WAF's or a CDN's rules are not here
+SCORERS = {
+    "Akamai": ("Bot Manager", "Akamai Bot Manager"),
+    "Cloudflare": ("__cf_bm", "Cloudflare's bot detection (__cf_bm)"),
+    "DataDome": ("", "DataDome"),
+    "HUMAN (PerimeterX)": ("", "HUMAN (PerimeterX)"),
+    "Kasada": ("", "Kasada"),
+    "Myra Security": ("", "Myra Security"),
+}
+EXPECTED = 4  # what a long run behind one can meet: a challenge, or a block
+
+
+def scorers(f: Findings) -> dict[str, str]:
+    """{vendor: its bot product's name} of the services in front that score clients over a session."""
+    found = {}
+    for vendor, evidence in (f.get("vendors") or {}).items():
+        if vendor in SCORERS:
+            marker, name = SCORERS[vendor]
+            if not marker or any(marker in e for e in evidence):
+                found[vendor] = name
+    return found
+
+
 def client_name(kind: str) -> str:
     """What the report calls a client: "curl_cffi as Chrome" for curl-chrome."""
     return settings.CLIENT_NAMES.get(kind, kind)
@@ -150,6 +175,10 @@ def protection_level(f: Findings) -> dict[str, Any]:
     rate = (["the session test, 4 at a time"] if (f.get("session") or {}).get("refused") else []) + (
         [f"{', '.join(limits)} (429, one at a time)"] if limits else []
     )
+    long = f.get("long") or {}
+    late = long.get("refused") or {}  # turned away late in the long session: a 429 is a limit, the rest more
+    if late.get("verdict") == "limited":
+        rate.append(f"the long session (429 at request {late['at']}, {late['minutes']} min in)")
     others = {step: {v: n for v, n in got.items() if v != "limited"} for step, got in elsewhere.items()}
     others = {step: got for step, got in others.items() if got}
     if others:
@@ -163,13 +192,47 @@ def protection_level(f: Findings) -> dict[str, Any]:
         if level == 0:
             level, label = 1, "a rate limit"
 
-    if guards or level >= 2:
+    # what a long run can meet: the level seen, or more behind a service that scores clients over a session
+    scoring = scorers(f)
+    expected = max(level, EXPECTED) if scoring else level
+    if scoring and level < EXPECTED:
+        said += (
+            f" {' and '.join(scoring.values())} {'score' if len(scoring) > 1 else 'scores'} every client over a"
+            " session: a long run can be challenged or blocked though this one was let in"
+            + ("." if long and not long.get("skipped") else " (--long measures it).")
+        )
+    ruled = [v for v in vendors if v in GUARDS and v not in scoring]  # a WAF's rules: what is seen is what they do
+    if ruled and level < EXPECTED:
+        said += (
+            f" {', '.join(ruled)} {'act' if len(ruled) > 1 else 'acts'} on the site owner's rules:"
+            " what this run saw holds until they change."
+        )
+    if late and late.get("verdict") != "limited":
+        by = f", {late['why']}" if late.get("why") else ""
+        said += (
+            f" A long session was turned away at request {late['at']}, {late['minutes']} min in"
+            f" ({late['status']} {late['verdict']}{by})."
+        )
+        expected = max(expected, EXPECTED)
+    elif long.get("asked") and not late and not long.get("lost"):
+        said += f" A long session of {long['minutes']} min ({long['asked']} requests) was not refused."
+
+    if long.get("asked"):
+        unseen = f"limits past {long['minutes']} min of one session, the IP's reputation"
+    elif guards or level >= 2:
         unseen = "limits over a long session, behaviour scoring, the IP's reputation"
     elif (f.get("burst") or {}).get("steps") and not (f.get("burst") or {}).get("stop"):
         unseen = "a limiter that allows a larger burst than recon's"
     else:
         unseen = "limits past the pace recon kept"
-    return {"level": level, "label": label, "said": said, "unseen": unseen}
+    return {
+        "level": level,
+        "label": label,
+        "said": said,
+        "unseen": unseen,
+        "expected": expected,
+        "scorers": list(scoring.values()),
+    }
 
 
 def protection(f: Findings) -> list[str]:
@@ -194,6 +257,9 @@ def protection(f: Findings) -> list[str]:
             "refused in other steps: "
             + "; ".join(f"{step} ({', '.join(f'{n} {v}' for v, n in got.items())})" for step, got in elsewhere.items())
         )
+    refused = (f.get("long") or {}).get("refused")
+    if refused:
+        why.append(f"refused in the long session ({refused['status']} {refused['verdict']} at request {refused['at']})")
     if (f.get("robots") or {}).get("state") == "unreadable":
         why.append("robots.txt could not be read: everything counts as disallowed")
     return why
@@ -293,6 +359,8 @@ def compare(prev: Findings, f: Findings) -> list[str]:
         (f.get("level") or {}).get("level"),
         "level",
     )
+    if "expected" in (prev.get("level") or {}):  # older reports have none
+        note("expected level", prev["level"]["expected"], (f.get("level") or {}).get("expected"))
     note("in front", sorted(prev.get("vendors") or {}), sorted(f.get("vendors") or {}))
     note("clients let in", prev.get("let_in"), f.get("let_in"))
     note("way in", prev.get("way_in"), f.get("way_in"))

@@ -128,6 +128,7 @@ python -m recon URL [options]
 | `--products N` | how many product pages to sample (default 10, `0` for none) |
 | `--browser` | open Chrome even when no client was challenged |
 | `--no-burst` | never run the burst test |
+| `--long [MIN]` | also one slow session over MIN minutes (default 15), a request every 5-10 s: does a bot manager turn it away later? |
 | `--pause S` | seconds between requests (default 0.5, or robots.txt's `Crawl-delay` if longer) |
 | `--compare FILE` | compare with this earlier `.json` report (default: the newest one of the same host) |
 | `--notes DIR` | look the site and its platform up in a folder of Markdown notes, such as an Obsidian vault (or `$RECON_NOTES`) |
@@ -178,6 +179,17 @@ The verdict opens with a protection level, from what the run saw:
 It says who refused, what got through, and what one run cannot see, such as
 limits over a long session.
 
+A short run can be let in where a long one is not. When a service that scores
+each client over its session is in front, the headline adds what a long run
+can meet: "level 2 of 5, a filter by name; up to 4 expected over a long run".
+Such a service is recognised by its bot product's own markers, not by the
+vendor's name alone: Akamai with its Bot Manager cookies, Cloudflare with
+`__cf_bm` (set by its Bot Management and Bot Fight Mode), DataDome, HUMAN,
+Kasada, Myra. A WAF that acts on its owner's rules raises nothing: what the run
+saw is what those rules do, until they change. `--long` measures it: one
+cookie jar walks the site for 15 minutes, a request every 5-10 s, and the
+report says at which request and minute it was turned away, if it was.
+
 Every answer is classified the same way. It is `ok`, `redirect`, `gone`,
 `client-error`, `server-error`, a refusal (`challenge`, `blocked`, `refused`,
 `limited`) with who refused it, or no answer (`dropped`, `error`).
@@ -218,6 +230,9 @@ or public sites whose terms permit it. It is careful by default:
 - a home page that redirects to another site stops the run: recon looks at the
   site it is given, and names the address to run it on;
 - any refusal, in any step, keeps the burst off;
+- `--long` asks one page every 5-10 s (or the Crawl-delay), slower than the
+  rest of the run, so it runs behind protection too; it stops at the first
+  refusal;
 - **the burst runs only when nothing protects the site.** Any anti-bot service
   in front, a browser-like client turned away, or a Crawl-delay turns it off.
   It stops at the first refusal, dropped connection or slowdown, and at
@@ -241,7 +256,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 166 tests, offline, ~75 s
+pytest                                       # 174 tests, offline, ~80 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```
@@ -250,7 +265,8 @@ The tests never touch the network. `tests/fakes.py` holds `FakeSite`, a
 stand-in shop with a sitemap, product pages and a listing. It can play many
 sites: Cloudflare challenging httpx, User-Agent filters, a session lock, a
 rate limit, dropped connections, a slowing server, soft 404s, a wrapping
-listing, a Crawl-delay, Myra in front, or 200s that shrink under load.
+listing, a Crawl-delay, Myra in front, 200s that shrink under load, or a
+block that comes only late in a long session.
 
 The real `Recon` runs against it. Each safety rule was checked by breaking the
 code on purpose and watching a test fail. CI runs ruff, mypy and the tests on

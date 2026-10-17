@@ -43,8 +43,20 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--notes", type=Path, help=f"a folder of Markdown notes to look the site up in (or ${settings.NOTES_ENV})"
     )
+    p.add_argument(
+        "--long",
+        nargs="?",
+        type=float,
+        const=settings.LONG_MINUTES,
+        metavar="MIN",
+        help=f"also one session over MIN minutes (default {settings.LONG_MINUTES:g}), a request every "
+        f"{settings.LONG_PAUSE[0]:g}-{settings.LONG_PAUSE[1]:g} s: does a bot manager turn it away later?",
+    )
     p.add_argument("--version", action="version", version=f"recon {__version__}")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.long is not None and args.long <= 0:
+        p.error("--long: minutes must be more than 0")
+    return args
 
 
 def stem_of(home: str) -> str:
@@ -99,6 +111,7 @@ def main(argv: list[str] | None = None) -> int:
         pause=args.pause,
         notes=args.notes or os.environ.get(settings.NOTES_ENV),
         products=args.products,
+        long=args.long,
     )
     findings = asyncio.run(recon.run())
     host = stem_of(findings["home"])

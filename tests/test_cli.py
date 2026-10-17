@@ -4,8 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from recon import __version__
-from recon.cli import changes_since, load_report, main, write
+from recon import __version__, settings
+from recon.cli import arguments, changes_since, load_report, main, write
+
+
+def test_long_takes_minutes_or_its_default() -> None:
+    assert arguments(["shop.test", "--long"]).long == settings.LONG_MINUTES
+    assert arguments(["shop.test", "--long", "5"]).long == 5.0
+    assert arguments(["shop.test"]).long is None
+    with pytest.raises(SystemExit):
+        arguments(["shop.test", "--long", "0"])
 
 
 def test_version(capsys: pytest.CaptureFixture[str]) -> None:

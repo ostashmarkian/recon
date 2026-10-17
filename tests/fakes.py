@@ -8,7 +8,8 @@ a time, answer 429 past a number of requests, drop connections, slow down with
 more at a time, speak HTTP/1.1 only, answer 200 for what is not there, wrap its
 listing, ask for a Crawl-delay, put Myra in front, answer 200 with a PHP
 warning in place of its product pages when too many are asked at once, give
-some clients no answer, refuse its sitemap, or redirect its home page away.
+some clients no answer, refuse its sitemap, redirect its home page away, or
+block a client late in a long session.
 """
 
 from __future__ import annotations
@@ -99,6 +100,7 @@ class FakeSite:
         silent_for=(),
         sitemap_refused=False,
         home_moved=False,
+        block_after=None,
     ):
         self.guard, self.refuse_uas, self.lock, self.limit = guard, refuse_uas, lock, limit
         self.drop_after, self.slow, self.http, self.disallow = drop_after, slow, http, disallow
@@ -112,6 +114,7 @@ class FakeSite:
         self.silent_for = silent_for  # client kinds that get no answer in time, on any page
         self.sitemap_refused = sitemap_refused  # the sitemap robots.txt names answers 403, as S3 does
         self.home_moved = home_moved  # the home page redirects to another site
+        self.block_after = block_after  # product pages one client may ask before Akamai blocks it
         self.asked: list[tuple[str, str | None, str]] = []  # (client kind, ua, path)
         self.in_flight = 0
         self.most_in_flight = 0  # the most requests out at once
@@ -206,6 +209,8 @@ class FakeClient:
             self.pages += 1
             if site.limit is not None and self.pages > site.limit:
                 return Answer(url, 429, {"retry-after": "60"}, (), b"", 0.01, http=site.http)
+            if site.block_after is not None and self.pages > site.block_after:
+                return Answer(url, 403, {"server": "AkamaiGHost"}, (), b"Access Denied", 0.01, http=site.http)
             if site.drop_after is not None and self.pages > site.drop_after:
                 return Answer(url, error="RemoteProtocolError: Server disconnected without sending a response.")
             if site.shrink_over is not None and crowd > site.shrink_over:

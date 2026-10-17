@@ -128,6 +128,13 @@ SHRUNK_MAX = 2
 RECOVER = 30
 
 
+# --long: one cookie jar, one request every 5 to 10 s, for LONG_MINUTES or LONG_MOST requests. The pause varies,
+# as a bot manager can tell a clock; and it is slower than the rest of the run, so it runs behind protection too
+LONG_MINUTES = 15.0
+LONG_PAUSE = (5.0, 10.0)
+LONG_MOST = 200
+
+
 PRODUCT_TRIES = 2  # more product links read when the deeper page shows no product data
 
 

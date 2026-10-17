@@ -101,7 +101,9 @@ def report(f: Findings) -> str:
         return "\n".join(out) + "\n\n"
     level = f.get("level") or {}
     if level:
-        out.append(f"- **Protection: level {level['level']} of 5, {level['label']}.** {level['said']}")
+        expected = level.get("expected", level["level"])
+        more = f"; up to {expected} expected over a long run" if expected > level["level"] else ""
+        out.append(f"- **Protection: level {level['level']} of 5, {level['label']}{more}.** {level['said']}")
         if f["protection"]:
             out.append("  - seen: " + "; ".join(f["protection"]))
         out.append(f"  - not seen in one run: {level['unseen']}")
@@ -118,6 +120,20 @@ def report(f: Findings) -> str:
             f"- **Session lock:** {'yes' if session['lock'] else 'no'}: {jar}/s with one cookie jar,"
             f" {none}/s with none, {settings.SESSION_AT_ONCE} at a time"
         )
+    long = f.get("long") or {}
+    if long.get("skipped"):
+        out.append(f"- **Long session:** not run ({long['skipped']})")
+    elif long:
+        low, high = long["pause"]
+        how = f"{client_name(long['client'])}, one cookie jar, a request every {low:g}-{high:g} s"
+        stop = long.get("refused") or long.get("lost")
+        if stop:
+            out.append(
+                f"- **Long session:** {'refused' if long.get('refused') else 'answers lost'} at request {stop['at']},"
+                f" {stop['minutes']} min in: {cell(stop)} ({how})"
+            )
+        else:
+            out.append(f"- **Long session:** {long['asked']} requests over {long['minutes']} min, none refused ({how})")
     if burst.get("skipped"):
         out.append(
             "- **Burst:** skipped ("

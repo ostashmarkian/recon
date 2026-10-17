@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from recon.findings import compare, guards_named, previous_report, protection_level
+from recon.findings import compare, guards_named, previous_report, protection, protection_level
 from recon.notes import notes_on, read_notes
 
 BEFORE = {
@@ -68,6 +68,61 @@ def test_refused_only_under_load_is_a_rate_limit() -> None:
 
 
 OK_ROW = {"client": "httpx-h2", "page": "https://s.test/", "verdict": "ok", "why": ""}
+
+
+def test_a_bot_manager_in_front_raises_the_expected_level_not_the_seen_one() -> None:
+    """Akamai Bot Manager let every client in over a short run: level 2 seen, up to 4 expected."""
+    f = {
+        "clients": [OK_ROW],
+        "let_in": ["httpx-h2"],
+        "ua_filter": "blocked python-requests",
+        "vendors": {"Akamai": ["header x-akamai-transformed", "cookie ak_bmsc (Bot Manager)"]},
+    }
+    level = protection_level(f)
+    assert (level["level"], level["expected"], level["scorers"]) == (2, 4, ["Akamai Bot Manager"])
+    assert (
+        "Akamai Bot Manager scores every client over a session: a long run can be challenged or blocked"
+        in (level["said"])
+    )
+    assert level["said"].endswith("(--long measures it).")
+
+
+def test_a_waf_by_rules_raises_no_expected_level() -> None:
+    """Akamai with no Bot Manager cookie, Cloudflare with no __cf_bm: what was seen is what their rules do."""
+    for vendors in ({"Akamai": ["server: AkamaiGHost"]}, {"Cloudflare": ["cf-ray", "server: cloudflare"]}):
+        level = protection_level({"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": vendors})
+        assert (level["level"], level["expected"], level["scorers"]) == (1, 1, [])
+        assert "acts on the site owner's rules: what this run saw holds until they change." in level["said"]
+    bm = protection_level(
+        {"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": {"Cloudflare": ["cf-ray", "cookie __cf_bm"]}}
+    )
+    assert (bm["expected"], bm["scorers"]) == (4, ["Cloudflare's bot detection (__cf_bm)"])
+
+
+def test_a_long_session_turned_away_late() -> None:
+    late = {"at": 37, "minutes": 6.2, "url": "u", "status": 403, "verdict": "blocked", "why": "Akamai"}
+    f = {
+        "clients": [OK_ROW],
+        "let_in": ["httpx-h2"],
+        "vendors": {},
+        "long": {"asked": 37, "minutes": 6.2, "refused": late},
+    }
+    level = protection_level(f)
+    assert (level["level"], level["expected"]) == (0, 4)
+    assert "A long session was turned away at request 37, 6.2 min in (403 blocked, Akamai)." in level["said"]
+    assert "refused in the long session (403 blocked at request 37)" in protection(f)
+    limited = {**late, "status": 429, "verdict": "limited", "why": ""}
+    f["long"]["refused"] = limited
+    level = protection_level(f)
+    assert (level["level"], level["label"], level["expected"]) == (1, "a rate limit", 1), "a 429 is a limit"
+    assert "the long session (429 at request 37, 6.2 min in)" in level["said"]
+
+
+def test_a_long_session_not_turned_away() -> None:
+    f = {"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": {}, "long": {"asked": 90, "minutes": 15.0}}
+    level = protection_level(f)
+    assert "A long session of 15.0 min (90 requests) was not refused." in level["said"]
+    assert level["unseen"] == "limits past 15.0 min of one session, the IP's reputation"
 
 
 def test_a_refusal_one_at_a_time_is_a_pages_not_a_rate_limit() -> None:

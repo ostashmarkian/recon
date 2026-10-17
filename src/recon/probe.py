@@ -52,7 +52,10 @@ against it: what changed since.
 9. A session lock: SESSION_PAGES pages SESSION_AT_ONCE at a time with one
    cookie jar, and as many others with none. Some servers (ASP.NET, PHP
    sessions) serve one session's requests one at a time: 0.8 pages/s with a
-   jar against 11 without was seen.
+   jar against 11 without was seen. With --long, then one session over
+   --long minutes, a request every 5 to 10 s: a service that scores clients
+   over a session (a bot manager) lets a short run in and turns a long one
+   away. It runs behind protection too, being slower than the rest.
 10. A burst, only when nothing above found protection - no anti-bot service
    in front, no client with a browser User-Agent turned away - and robots.txt
    asks for no Crawl-delay. A filter of User-Agents by name (GPTBot,
@@ -181,6 +184,7 @@ class Recon:
         pause: float | None = None,
         notes: str | Path | Sequence[tuple[Path, str]] | None = None,
         products: int = settings.SAMPLE_PRODUCTS,
+        long: float | None = None,
     ) -> None:
         if "://" not in url:
             url = "https://" + url
@@ -195,6 +199,7 @@ class Recon:
         self.crawl_delay: float | None = None
         self.notes = read_notes(notes) if isinstance(notes, (str, Path)) else list(notes or [])
         self.sample_size = products
+        self.long_minutes = long  # --long: minutes of one slow session, or None for none
         self.requests = 0
         self.step: str | None = None  # the step under way, for refusals seen in it
         self.refused: dict[str, dict[str, int]] = {s: {} for s in WATCHED_STEPS}
@@ -289,6 +294,8 @@ class Recon:
             )
             self.computed("freshness", lambda: freshness([self.home_answer, *self.sample_answers]))
             await self.isolated("session_lock", self.session_lock)
+            if self.long_minutes:
+                await self.isolated("long", self.long_session)
             self.computed("vendors", lambda: vendors_of(self.seen))
             self.computed("ua_filter", lambda: ua_filter(f))
             await self.isolated("burst", self.burst)
@@ -764,6 +771,51 @@ class Recon:
             jar, none = result["with one jar"]["per_s"], result["with no cookies"]["per_s"]
             result["lock"] = jar < settings.LOCK_SHARE * none
         f["session"] = result
+
+    async def long_session(self) -> None:
+        """One cookie jar, the home page and then pages robots.txt allows, one request every LONG_PAUSE s
+        (or the Crawl-delay), for --long minutes or LONG_MOST requests: a service that scores clients over a
+        session lets a short run in and turns a long one away. It stops at the first refusal, or at LOST_MAX
+        answers lost in a row."""
+        f = self.f
+        if not self.best or not self.pool:
+            f["long"] = {"skipped": "no client let in" if not self.best else "no pages to ask for"}
+            return
+        low, high = (max(s, self.crawl_delay or 0) for s in settings.LONG_PAUSE)
+        client = self.make(self.best, ua=self.ua_for(self.best), cookies=True)
+        urls = itertools.chain([self.home], itertools.cycle(self.pool))
+        answers: list[Answer] = []
+        refused: dict[str, Any] | None = None
+        lost: dict[str, Any] | None = None
+        in_a_row = 0
+        began = time.monotonic()
+        try:
+            while time.monotonic() - began < (self.long_minutes or 0) * 60 and len(answers) < settings.LONG_MOST:
+                if answers:
+                    await asyncio.sleep(random.uniform(low, high))
+                a = await self.get(client, next(urls), pause=False)
+                self.keep(a)
+                answers.append(a)
+                verdict = judge(a)[0]
+                in_a_row = in_a_row + 1 if verdict in LOST else 0
+                if verdict in REFUSALS or in_a_row >= settings.LOST_MAX:
+                    seen = {"at": len(answers), "minutes": round((time.monotonic() - began) / 60, 1), "url": a.url}
+                    if verdict in REFUSALS:
+                        refused = {**seen, **summary(a)}
+                    else:
+                        lost = {**seen, **summary(a)}
+                    break
+        finally:
+            await client.aclose()
+        f["long"] = {
+            "client": self.best,
+            "pause": [low, high],
+            "asked": len(answers),
+            "minutes": round((time.monotonic() - began) / 60, 1),
+            "answers": counts(answers),
+            "refused": refused,
+            "lost": lost,
+        }
 
     async def shrank(self, client: Client, answers: list[Answer], floor: int, at_once: int) -> tuple[str | None, int]:
         """Whether 200s came back shrunk under load: SHRUNK_MAX or more under SHRUNK_SHARE of `floor`, and one of

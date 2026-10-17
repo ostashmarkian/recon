@@ -151,6 +151,36 @@ def test_myra_in_front_keeps_the_burst_off():
     assert f["level"]["level"] == 1
 
 
+class TestLongSession:
+    def test_turned_away_late_keeps_the_burst_off(self, monkeypatch):
+        """Akamai lets a client have 15 product pages, then blocks it: only a long session sees it."""
+        monkeypatch.setattr(settings, "LONG_PAUSE", (0, 0))
+        site = FakeSite(block_after=15)
+        f, text, _ = scan(site, long=1.0)
+        late = f["long"]["refused"]
+        assert (late["status"], late["verdict"], late["why"]) == (403, "blocked", "Akamai")
+        assert f["long"]["asked"] == late["at"], "nothing more asked after the refusal"
+        assert (f["level"]["expected"], f["level"]["level"]) == (4, 1)
+        assert "**Protection: level 1 of 5, a service in front, no client turned away; up to 4 expected" in text
+        assert f"- **Long session:** refused at request {late['at']}" in text
+        assert f["burst"]["skipped"] == [
+            "in front: Akamai",
+            f"refused in the long session (403 blocked at request {late['at']})",
+        ]
+
+    def test_not_turned_away_runs_to_its_cap(self, monkeypatch):
+        monkeypatch.setattr(settings, "LONG_PAUSE", (0, 0))
+        monkeypatch.setattr(settings, "LONG_MOST", 6)
+        f, text, _ = scan(FakeSite(), long=1.0, burst=False)
+        assert (f["long"]["asked"], f["long"]["refused"]) == (6, None)
+        assert "- **Long session:** 6 requests over 0.0 min, none refused (httpx HTTP/2, one cookie jar" in text
+        assert "A long session of 0.0 min (6 requests) was not refused." in f["level"]["said"]
+
+    def test_not_run_without_the_flag(self):
+        f, text, _ = scan(FakeSite(), burst=False)
+        assert "long" not in f and "Long session" not in text
+
+
 def test_user_agent_filter_is_not_protection():
     f, text, _ = scan(FakeSite(refuse_uas=("GPTBot", "ClaudeBot")))
     assert f["ua_filter"] == "refused GPTBot, ClaudeBot"

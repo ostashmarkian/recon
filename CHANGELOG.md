@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Two levels: seen and expected.** A service that scores each client over its
+  session can let a short run in and turn a long one away. With one in front,
+  the headline reads "level 2 of 5, a filter by name; up to 4 expected over a
+  long run". It is recognised by its bot product's markers: Akamai's Bot Manager
+  cookies, Cloudflare's `__cf_bm`, DataDome, HUMAN, Kasada, Myra. A WAF that acts
+  on its owner's rules raises nothing, and the verdict says that what was seen
+  holds until those rules change.
+- **`--long [MIN]`:** one cookie jar walks the pages robots.txt allows for MIN
+  minutes (15), a request every 5 to 10 s, and stops at the first refusal. The
+  report says at which request and minute, and the level takes it in: a 429 is
+  a rate limit, any other refusal makes 4 expected. Its refusal keeps the burst
+  off. It runs behind protection too, since it is slower than the rest.
+- 174 tests.
+
 ## 1.1.0 - 2026-10-17
 
 - The verdict opens with a protection level from 0 (none seen) to 5 (nothing let in): who refused, what got
