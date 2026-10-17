@@ -44,6 +44,12 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--notes", type=Path, help=f"a folder of Markdown notes to look the site up in (or ${settings.NOTES_ENV})"
     )
     p.add_argument(
+        "--watch",
+        action="store_true",
+        help="open the home page, the product page and a listing in Chrome and list the JSON and HTML fragments "
+        "they fetch: where the catalogue's own API shows (needs patchright and Chrome)",
+    )
+    p.add_argument(
         "--long",
         nargs="?",
         type=float,
@@ -112,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         notes=args.notes or os.environ.get(settings.NOTES_ENV),
         products=args.products,
         long=args.long,
+        watch=args.watch,
     )
     findings = asyncio.run(recon.run())
     host = stem_of(findings["home"])

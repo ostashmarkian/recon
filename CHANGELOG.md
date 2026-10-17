@@ -29,7 +29,19 @@
   the sitemap's other pages are tried after the product links. A product
   address that redirects on the site is followed once. The sample is drawn
   from the found product's family first.
-- 180 tests.
+- **`--watch`: what the pages fetch.** Chrome opens the home page, the product
+  page and a listing, each until its network is quiet and once scrolled, and
+  the report lists every XHR and fetch call with what its answer holds:
+  - a product list: where it sits, how many items, their keys, and which of
+    ids, names, prices and stock they carry;
+  - the paging keys;
+  - an HTML fragment of product links;
+  - a GraphQL operation.
+
+  Analytics and ads are left out. The catalogue's own API usually shows only
+  here, since a page's scripts call it. It runs only where a plain client was
+  let in, and only on pages robots.txt allows.
+- 192 tests.
 
 ## 1.1.0 - 2026-10-17
 

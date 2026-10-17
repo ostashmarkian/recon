@@ -260,6 +260,53 @@ class FakeBrowser:
         }
 
 
+class FakeWatcher:
+    """watch_in_browser as Chrome would answer: every page fetches a product list from the shop's own API,
+    a search service's query and an HTML fragment of product links; or Chrome is not there."""
+
+    def __init__(self, fail: bool = False):
+        self.fail, self.urls = fail, []
+
+    async def __call__(self, urls: list[str]) -> dict:
+        self.urls.extend(urls)
+        if self.fail:
+            raise RuntimeError("Chrome is not installed")
+        products = [{"id": n, "sku": f"S-{n}", "name": f"Part {n}", "price": "1.50", "stock": 4} for n in range(24)]
+        listed = json.dumps({"products": products, "total": 40, "page": 1}).encode()
+        fragment = "".join(f'<a href="/product/{n}/">p</a>' for n in range(10)).encode()
+        calls = [
+            {
+                "method": "GET",
+                "url": f"{BASE}/ajax/listing?page=2",
+                "status": 200,
+                "type": "text/html",
+                "sent": "",
+                "body": fragment,
+            },
+            {
+                "method": "POST",
+                "url": "https://abc-dsn.algolia.net/1/indexes/*/queries",
+                "status": 200,
+                "type": "application/json; charset=UTF-8",
+                "sent": '{"requests": []}',
+                "body": b'{"results": [{"hits": [], "nbHits": 0}]}',
+            },
+            {
+                "method": "GET",
+                "url": f"{BASE}/api/catalog/products?limit=24",
+                "status": 200,
+                "type": "application/json",
+                "sent": "",
+                "body": listed,
+            },
+        ]
+        return {
+            "ua": "Chrome",
+            "seconds": 3.2,
+            "pages": [{"url": u, "status": 200, "title": "Shop", "calls": calls} for u in urls],
+        }
+
+
 def scan(site: FakeSite, browser: FakeBrowser | None = None, **kw: Any) -> tuple[dict, str, FakeBrowser]:
     """(findings, the report, the browser) of a whole run of recon against `site`."""
     browser = browser or FakeBrowser()

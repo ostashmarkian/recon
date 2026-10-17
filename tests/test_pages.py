@@ -12,9 +12,10 @@ from recon.pages import (
     PRODUCT_HINT,
     SITEMAP_HINT,
     by_family,
-    family,
     drawn,
+    family,
     freshness,
+    listing_of,
     listing_page,
     made_up,
     product_data,
@@ -22,6 +23,15 @@ from recon.pages import (
     spread,
 )
 from recon.report import freshness_line
+
+
+def test_a_category_page_by_its_breadcrumb() -> None:
+    products = [f"{BASE}/uk/catalog/electrical-products/054291", f"{BASE}/uk/catalog/tools/0123"]
+    links = [f"{BASE}/", f"{BASE}/jobs.php", f"{BASE}/uk/catalog", f"{BASE}/uk/catalog/electrical-products", *products]
+    assert listing_of(products, links) == f"{BASE}/uk/catalog/electrical-products"
+    menu = [f"{BASE}/c/{n}/name-{n}/" for n in range(5)] + [f"{BASE}/about/"]
+    assert listing_of([f"{BASE}/v/1519813/led"], menu) == f"{BASE}/c/0/name-0/", "else the largest deeper family"
+    assert listing_of([], [f"{BASE}/", f"{BASE}/about/"]) is None
 
 
 def test_families_of_addresses_taken_in_turn() -> None:

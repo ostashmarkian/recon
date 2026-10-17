@@ -44,6 +44,24 @@ def by_family(urls: Iterable[str]) -> list[str]:
     return [g[i] for i in range(max(map(len, ordered), default=0)) for g in ordered if i < len(g)]
 
 
+def listing_of(products: list[str], links: list[str]) -> str | None:
+    """A category page: a link whose path a product's path goes on from (a breadcrumb: /catalog/diodes for
+    /catalog/diodes/1234), else one of the largest family of the other links two segments deep or more."""
+    paths = [urlsplit(u).path.rstrip("/") for u in products[:500]]
+    taken = set(products)
+    others = [u for u in dict.fromkeys(links) if u not in taken]
+    crumbs = [
+        u
+        for u in others
+        if urlsplit(u).path.rstrip("/").count("/") >= 2
+        and any(p.startswith(urlsplit(u).path.rstrip("/") + "/") for p in paths)
+    ]
+    if crumbs:  # the deepest: a category, not the catalogue's root
+        return max(crumbs, key=lambda u: urlsplit(u).path.rstrip("/").count("/"))
+    deeper = [u for u in others if urlsplit(u).path.strip("/").count("/") >= 1 and not urlsplit(u).query]
+    return next(iter(by_family(deeper)), None)
+
+
 # a sitemap file of products, by its name: sitemap_products_1.xml, xmlsitemap.php?type=products, items-3.xml.gz
 SITEMAP_HINT = re.compile(r"product|item|goods|catalog|offer|sku", re.I)
 

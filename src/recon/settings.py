@@ -93,6 +93,15 @@ BROWSER_WAIT = 45  # s for the browser's page to stop being a challenge
 BROWSER_SETTLE = 5  # s for cf_clearance once the real page shows
 
 
+# --watch: what the pages fetch in Chrome. WATCH_PAGES pages, each loaded until its network is quiet (WATCH_WAIT s
+# at most), scrolled once and given WATCH_SETTLE s more; WATCH_CALLS calls of a page and WATCH_BODY bytes of each
+WATCH_PAGES = 3
+WATCH_WAIT = 30
+WATCH_SETTLE = 2.0
+WATCH_CALLS = 60
+WATCH_BODY = 2_000_000
+
+
 SESSION_PAGES = 12
 
 

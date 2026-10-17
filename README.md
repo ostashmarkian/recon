@@ -96,6 +96,13 @@ product page read, each not-found probe. See the full report:
 - Reads sitemaps, plain or gzipped, and finds search services (Algolia,
   Searchanise, Klevu, Doofinder, Boost and others), `__NEXT_DATA__` blobs and
   the API paths the pages call.
+- With `--watch`, opens the home page, the product page and a listing in
+  Chrome and lists the XHR and fetch calls they make. Each answer is read for
+  a scraper: a product list (where it sits, how many items, which of ids,
+  names, prices and stock they carry), its paging keys, an HTML fragment of
+  product links, a GraphQL operation. The catalogue's own API usually shows
+  only there. It sees what a page asks for as it opens and scrolls: a call
+  made only on a click, such as a next-page button, does not show.
 
 **Data quality**
 - Reads schema.org Product data (JSON-LD and microdata), product meta tags, and
@@ -128,6 +135,7 @@ python -m recon URL [options]
 | `--products N` | how many product pages to sample (default 10, `0` for none) |
 | `--browser` | open Chrome even when no client was challenged |
 | `--no-burst` | never run the burst test |
+| `--watch` | open three pages in Chrome and list the JSON and HTML fragments they fetch |
 | `--long [MIN]` | also one slow session over MIN minutes (default 15), a request every 5-10 s: does a bot manager turn it away later? |
 | `--pause S` | seconds between requests (default 0.5, or robots.txt's `Crawl-delay` if longer) |
 | `--compare FILE` | compare with this earlier `.json` report (default: the newest one of the same host) |
@@ -210,6 +218,7 @@ The code is a package in `src/recon/`:
 | `report` | the Markdown report |
 | `robots` | robots.txt as RFC 9309 reads it, the same on every Python version |
 | `settings` | every tunable in one place |
+| `calls` | what the pages' own XHR and fetch calls answer: product lists, paging, fragments |
 | `browser`, `notes`, `cli` | Chrome via patchright, the notes folder, the command |
 
 ## Responsible use
@@ -232,6 +241,9 @@ or public sites whose terms permit it. It is careful by default:
 - a home page that redirects to another site stops the run: recon looks at the
   site it is given, and names the address to run it on;
 - any refusal, in any step, keeps the burst off;
+- `--watch` opens three pages robots.txt allows in Chrome, as a visitor would,
+  and only where a plain client was let in: it reads what a site shows, it is
+  no way past a site that says no;
 - `--long` asks one page every 5-10 s (or the Crawl-delay), slower than the
   rest of the run, so it runs behind protection too; it stops at the first
   refusal;
@@ -258,7 +270,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 180 tests, offline, ~90 s
+pytest                                       # 192 tests, offline, ~95 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```
@@ -285,6 +297,8 @@ add a platform, an anti-bot service or a language.
 - signatures of platforms, anti-bot services and search services as data
   files, so they can be added without touching code
 - `--render`: read the data of pages drawn by JavaScript through the browser
+- `--watch` deeper: follow a product list's paging call once, to show which
+  parameter pages and how far
 - listing checks: page-size limits, stable sorting, catalogue size from
   several sources
 - `--proxy`, and a HAR export of every request

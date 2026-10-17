@@ -41,6 +41,50 @@ def sample_line(s: dict[str, Any]) -> str:
     return "; ".join(said) + (f"; {len(s['traps'])} trap(s):" if s["traps"] else "; no trap seen")
 
 
+def what_call(c: dict[str, Any]) -> str:
+    """What one call a page made holds, in a few words: "a product list at items (24: id, sku, price, stock),
+    paging total, page"."""
+    if c["kind"] in ("products", "list"):
+        said = (
+            f"{'a product list' if c['kind'] == 'products' else 'a list'} at `{c['path']}` ({c['items']}: "
+            + ", ".join(c["keys"][:8])
+            + ")"
+        )
+    elif c["kind"] == "html":
+        said = f"an HTML fragment, {c['links']} links, {c['product_links']} to products"
+    elif c["kind"] == "data":
+        said = "data, no list"
+    else:
+        said = f"{c['type'] or 'no type'}"
+    if c.get("paging"):
+        said += "; paging " + ", ".join(c["paging"])
+    if c.get("operation"):
+        said += f"; GraphQL {c['operation']}"
+    return said
+
+
+def watch_line(w: dict[str, Any]) -> str:
+    """The verdict's line on what the pages fetch."""
+    if w.get("skipped"):
+        return f"not watched ({w['skipped']})"
+    if w.get("error"):
+        return f"Chrome could not run ({w['error']})"
+    calls = [c for p in w.get("pages") or [] for c in p["calls"]]
+    if not calls:
+        return f"no XHR or fetch on the {len(w.get('pages') or [])} pages opened"
+    best = [c for c in calls if c["kind"] == "products"] or [
+        c for c in calls if c["kind"] == "html" and c.get("product_links", 0) >= 3
+    ]
+    lead = "; ".join(f"{c['method']} {short_url(c['url'])}: {what_call(c)}" for c in best[:2])
+    return f"{len(calls)} calls on {len(w['pages'])} pages" + (f"; {lead}" if lead else "; none of them a product list")
+
+
+def short_url(url: str, most: int = 90) -> str:
+    parts = urlsplit(url)
+    shown = parts.path + (f"?{parts.query}" if parts.query else "")
+    return (shown if len(shown) <= most else shown[: most - 1] + "…") or "/"
+
+
 def freshness_line(fr: dict[str, Any]) -> str:
     if not fr.get("pages"):
         return "no page read"
@@ -178,6 +222,8 @@ def report(f: Findings) -> str:
         f"{len(src['endpoints'])} API paths in the pages" if src.get("endpoints") else "",
     ]
     out.append("- **Catalogue sources:** " + ("; ".join(s for s in said if s) or "none seen in the pages"))
+    if f.get("watch"):
+        out.append(f"- **What the pages fetch:** {watch_line(f['watch'])}")
     plats = f.get("platforms") or []
     out.append(
         "- **Platform:** "
@@ -328,6 +374,29 @@ def report(f: Findings) -> str:
         if src.get("endpoints"):
             out.append("- API paths: " + ", ".join(f"`{e}`" for e in src["endpoints"]))
         out.append("")
+
+    watched = (f.get("watch") or {}).get("pages") or []
+    if watched:
+        out += [
+            "## What the pages fetch, in Chrome",
+            "",
+            "Each page loaded until its network went quiet, then scrolled once. Analytics and ads are left out.",
+            "",
+        ]
+        for page in watched:
+            out.append(f'**{short_url(page["url"])}** ({page["status"] or "-"}, "{page["title"]}"):')
+            out.append("")
+            if not page["calls"]:
+                out += ["- no XHR or fetch", ""]
+                continue
+            out += ["| call | answer | what |", "|---|---|---|"]
+            for c in page["calls"][:20]:
+                where = "" if c["own"] else f" ({urlsplit(c['url']).hostname})"
+                out.append(
+                    f"| {c['method']} `{short_url(c['url'], 70)}`{where} | {c['status']} {c['type']}, "
+                    f"{c['bytes']:,} bytes | {what_call(c)} |"
+                )
+            out.append("")
 
     if f.get("errors"):
         out += ["## Errors", "", "Steps that broke; the report holds what the others found.", ""]

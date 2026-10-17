@@ -3,7 +3,7 @@
 import asyncio
 
 import pytest
-from fakes import BASE, CHALLENGE, FakeBrowser, FakeClient, FakeSite, scan
+from fakes import BASE, CHALLENGE, FakeBrowser, FakeClient, FakeSite, FakeWatcher, scan
 
 from recon import settings
 from recon.clients import Answer
@@ -455,6 +455,46 @@ def test_a_product_is_looked_for_in_another_family_of_pages():
 def test_a_product_address_that_redirects_is_followed_once():
     f, _, _ = scan(FakeSite(), page=f"{BASE}/p/7/", burst=False)
     assert (f["product"]["url"], f["product"]["found"]) == (f"{BASE}/product/7/", True)
+
+
+class TestWatch:
+    def test_what_the_pages_fetch(self):
+        site, watcher = FakeSite(), FakeWatcher()
+        f, text, _ = scan(site, burst=False, watch=True, watcher=watcher)
+        assert watcher.urls == [f"{BASE}/", f["product"]["url"], f"{BASE}/category/?page=2"]
+        assert f["requests"] == len(site.asked) + 3, "a page Chrome opens counts as a request"
+        first = f["watch"]["pages"][0]["calls"]
+        assert [c["kind"] for c in first] == ["products", "html", "data"], "the product list first"
+        assert (first[0]["own"], first[2]["own"]) == (True, False)
+        assert (
+            "- **What the pages fetch:** 9 calls on 3 pages; GET /api/catalog/products?limit=24: a product list at"
+            " `products` (24: id, sku, name, price, stock); paging total, page" in text
+        )
+        assert "## What the pages fetch, in Chrome" in text and "(abc-dsn.algolia.net)" in text
+
+    def test_not_past_a_site_that_lets_no_client_in(self):
+        class Wall(FakeSite):
+            def answer(self, client, url, headers):
+                return Answer(url, 403, {"cf-mitigated": "challenge", "cf-ray": "x"}, (), CHALLENGE.encode(), 0.01)
+
+        watcher = FakeWatcher()
+        f, text, _ = scan(Wall(), burst=False, watch=True, watcher=watcher)
+        assert (f["watch"], watcher.urls) == ({"skipped": "no client let in"}, [])
+        assert "- **What the pages fetch:** not watched (no client let in)" in text
+
+    def test_only_pages_robots_txt_allows(self):
+        watcher = FakeWatcher()
+        f, _, _ = scan(FakeSite(disallow="/"), burst=False, watch=True, watcher=watcher)
+        assert (f["watch"], watcher.urls) == ({"skipped": "robots.txt allows none of the pages"}, [])
+
+    def test_chrome_missing_is_said(self):
+        _, text, _ = scan(FakeSite(), burst=False, watch=True, watcher=FakeWatcher(fail=True))
+        assert "Chrome could not run (RuntimeError: Chrome is not installed)" in text
+
+    def test_not_without_the_flag(self):
+        watcher = FakeWatcher()
+        f, _, _ = scan(FakeSite(), burst=False, watcher=watcher)
+        assert ("watch" not in f, watcher.urls) == (True, [])
 
 
 def test_sitemap_guessed_when_robots_names_none():

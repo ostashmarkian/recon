@@ -94,7 +94,8 @@ from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 from . import settings
-from .browser import open_in_browser
+from .browser import open_in_browser, watch_in_browser
+from .calls import call_record, rank
 from .classify import LOST, REFUSALS, judge, title_of, vendors_of
 from .clients import Answer, Client, make_client
 from .findings import (
@@ -120,6 +121,7 @@ from .pages import (
     drawn,
     family,
     freshness,
+    listing_of,
     listing_page,
     made_up,
     product_data,
@@ -189,6 +191,8 @@ class Recon:
         notes: str | Path | Sequence[tuple[Path, str]] | None = None,
         products: int = settings.SAMPLE_PRODUCTS,
         long: float | None = None,
+        watch: bool = False,
+        watcher: Callable[[list[str]], Awaitable[dict[str, Any]]] | None = None,
     ) -> None:
         if "://" not in url:
             url = "https://" + url
@@ -204,6 +208,7 @@ class Recon:
         self.notes = read_notes(notes) if isinstance(notes, (str, Path)) else list(notes or [])
         self.sample_size = products
         self.long_minutes = long  # --long: minutes of one slow session, or None for none
+        self.watch_allowed, self.watcher = watch, watcher or watch_in_browser  # --watch: what the pages fetch
         self.requests = 0
         self.step: str | None = None  # the step under way, for refusals seen in it
         self.refused: dict[str, dict[str, int]] = {s: {} for s in WATCHED_STEPS}
@@ -285,6 +290,7 @@ class Recon:
                 ("product", self.product),
                 ("not_found", self.not_found),
                 ("sample", self.product_sample),
+                *([("watch", self.watch)] if self.watch_allowed else []),
             ):
                 await self.isolated(name, do)
             f["refused_elsewhere"] = {step: got for step, got in self.refused.items() if got}
@@ -794,6 +800,39 @@ class Recon:
             jar, none = result["with one jar"]["per_s"], result["with no cookies"]["per_s"]
             result["lock"] = jar < settings.LOCK_SHARE * none
         f["session"] = result
+
+    async def watch(self) -> None:
+        """--watch: the home page, the product page and a listing page in Chrome, and what each asks for on its
+        own: the JSON and HTML fragments its scripts fetch, where the catalogue's own API shows. Only where a
+        client was let in: recon watches a site that lets it in, it is no way past one that does not."""
+        f = self.f
+        if not self.best:
+            f["watch"] = {"skipped": "no client let in"}
+            return
+        product = (f.get("product") or {}).get("url") or self.deep
+        rows = (f.get("not_found") or {}).get("rows") or []
+        listing = next((r["url"] for r in rows if r["probe"] == "a listing page"), None)
+        near = list(self.links)
+        if self.product_answer:  # its breadcrumbs name its categories
+            here = self.product_answer.url
+            near += [u for u in (self.same_site(join(here, h)) for h in HREF.findall(self.product_answer.head)) if u]
+        listing = listing or listing_of([*self.products, *([product] if product else [])], near)
+        urls = [u for u in dict.fromkeys([self.home, product, listing]) if u and self.robots.allows(u)]
+        urls = urls[: settings.WATCH_PAGES]
+        if not urls:
+            f["watch"] = {"skipped": "robots.txt allows none of the pages"}
+            return
+        try:
+            seen = await self.watcher(urls)
+        except Exception as e:
+            f["watch"] = {"error": f"{type(e).__name__}: {e}"[:300]}
+            return
+        self.requests += len(seen.get("pages") or [])
+        pages = []
+        for page in seen.get("pages") or []:
+            calls = sorted((call_record(c, self.host) for c in page.get("calls") or []), key=rank)
+            pages.append({"url": page["url"], "status": page.get("status"), "title": page.get("title"), "calls": calls})
+        f["watch"] = {"seconds": seen.get("seconds"), "pages": pages}
 
     async def long_session(self) -> None:
         """One cookie jar, the home page and then pages robots.txt allows, one request every LONG_PAUSE s
