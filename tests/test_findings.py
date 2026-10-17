@@ -70,8 +70,8 @@ def test_refused_only_under_load_is_a_rate_limit() -> None:
 OK_ROW = {"client": "httpx-h2", "page": "https://s.test/", "verdict": "ok", "why": ""}
 
 
-def test_a_bot_manager_in_front_raises_the_expected_level_not_the_seen_one() -> None:
-    """Akamai Bot Manager let every client in over a short run: level 2 seen, up to 4 expected."""
+def test_a_bot_manager_in_front_is_level_4() -> None:
+    """Akamai Bot Manager let every client in over a short run: it scores sessions, so 4, not 2."""
     f = {
         "clients": [OK_ROW],
         "let_in": ["httpx-h2"],
@@ -79,24 +79,35 @@ def test_a_bot_manager_in_front_raises_the_expected_level_not_the_seen_one() -> 
         "vendors": {"Akamai": ["header x-akamai-transformed", "cookie ak_bmsc (Bot Manager)"]},
     }
     level = protection_level(f)
-    assert (level["level"], level["expected"], level["scorers"]) == (2, 4, ["Akamai Bot Manager"])
-    assert (
-        "Akamai Bot Manager scores every client over a session: a long run can be challenged or blocked"
-        in (level["said"])
+    assert (level["level"], level["label"], level["scorers"]) == (4, "a bot manager in front", ["Akamai Bot Manager"])
+    assert level["said"].startswith(
+        "Akamai Bot Manager (header x-akamai-transformed, cookie ak_bmsc) scores every client over its session:"
+        " all 1 clients with a browser User-Agent let in now, a long run can be turned away (--long measures it)."
     )
-    assert level["said"].endswith("(--long measures it).")
+    assert "User-Agents refused by name: blocked python-requests." in level["said"]
 
 
-def test_a_waf_by_rules_raises_no_expected_level() -> None:
+def test_a_waf_by_rules_stays_at_what_was_seen() -> None:
     """Akamai with no Bot Manager cookie, Cloudflare with no __cf_bm: what was seen is what their rules do."""
     for vendors in ({"Akamai": ["server: AkamaiGHost"]}, {"Cloudflare": ["cf-ray", "server: cloudflare"]}):
         level = protection_level({"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": vendors})
-        assert (level["level"], level["expected"], level["scorers"]) == (1, 1, [])
+        assert (level["level"], level["scorers"]) == (1, [])
         assert "acts on the site owner's rules: what this run saw holds until they change." in level["said"]
     bm = protection_level(
         {"clients": [OK_ROW], "let_in": ["httpx-h2"], "vendors": {"Cloudflare": ["cf-ray", "cookie __cf_bm"]}}
     )
-    assert (bm["expected"], bm["scorers"]) == (4, ["Cloudflare's bot detection (__cf_bm)"])
+    assert (bm["level"], bm["scorers"]) == (4, ["Cloudflare's bot detection"])
+
+
+def test_a_challenge_only_a_browser_passes_is_5_and_none_passing_is_closed() -> None:
+    rows = [{"client": "httpx-h2", "page": "https://s.test/", "verdict": "challenge", "why": "Cloudflare"}]
+    f = {"clients": rows, "let_in": [], "vendors": {"Cloudflare": ["cf-ray"]}, "browser": {"passed": True}}
+    level = protection_level(f)
+    assert (level["level"], level["state"], level["label"]) == (5, None, "a challenge for every client")
+    assert level["said"].startswith("Cloudflare challenges every client, a browser User-Agent or not: only a real")
+    closed = protection_level({**f, "browser": {"passed": False, "cookies": []}})
+    assert (closed["level"], closed["state"], closed["label"]) == (None, "closed", "closed")
+    assert closed["said"] == "Cloudflare lets no client in. A real browser is refused too."
 
 
 def test_a_long_session_turned_away_late() -> None:
@@ -108,13 +119,13 @@ def test_a_long_session_turned_away_late() -> None:
         "long": {"asked": 37, "minutes": 6.2, "refused": late},
     }
     level = protection_level(f)
-    assert (level["level"], level["expected"]) == (0, 4)
+    assert (level["level"], level["label"]) == (4, "a long session turned away")
     assert "A long session was turned away at request 37, 6.2 min in (403 blocked, Akamai)." in level["said"]
     assert "refused in the long session (403 blocked at request 37)" in protection(f)
     limited = {**late, "status": 429, "verdict": "limited", "why": ""}
     f["long"]["refused"] = limited
     level = protection_level(f)
-    assert (level["level"], level["label"], level["expected"]) == (1, "a rate limit", 1), "a 429 is a limit"
+    assert (level["level"], level["label"]) == (1, "a rate limit"), "a 429 is a limit"
     assert "the long session (429 at request 37, 6.2 min in)" in level["said"]
 
 
@@ -151,8 +162,9 @@ def test_a_client_with_no_answer_is_not_turned_away() -> None:
     assert level["level"] == 0
     assert "No answer in time from curl_cffi as Chrome: not counted as turned away." in level["said"]
     silent = protection_level({"clients": rows[1:], "let_in": [], "no_answer": ["curl-chrome"], "vendors": {}})
-    assert (silent["level"], silent["said"]) == (
-        0,
+    assert (silent["level"], silent["state"], silent["said"]) == (
+        None,
+        "unknown",
         "No client got an answer in time: the protection could not be judged.",
     ), "not 'level 5, nothing let in'"
 

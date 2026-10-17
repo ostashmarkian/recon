@@ -148,7 +148,7 @@ def test_myra_in_front_keeps_the_burst_off():
     f, _, _ = scan(FakeSite(guard="myra"))
     assert f["vendors"] == {"Myra Security": ["server: myracloud"]}
     assert f["burst"] == {"skipped": ["in front: Myra Security"]}
-    assert f["level"]["level"] == 1
+    assert (f["level"]["level"], f["level"]["label"]) == (4, "a bot manager in front")
 
 
 class TestLongSession:
@@ -160,8 +160,8 @@ class TestLongSession:
         late = f["long"]["refused"]
         assert (late["status"], late["verdict"], late["why"]) == (403, "blocked", "Akamai")
         assert f["long"]["asked"] == late["at"], "nothing more asked after the refusal"
-        assert (f["level"]["expected"], f["level"]["level"]) == (4, 1)
-        assert "**Protection: level 1 of 5, a service in front, no client turned away; up to 4 expected" in text
+        assert (f["level"]["level"], f["level"]["label"]) == (4, "a long session turned away")
+        assert "**Protection: level 4 of 5, a long session turned away.** All 7 clients" in text
         assert f"- **Long session:** refused at request {late['at']}" in text
         assert f["burst"]["skipped"] == [
             "in front: Akamai",
@@ -279,14 +279,15 @@ def test_nothing_let_in():
 
     f, text, _ = scan(Wall(), browser=FakeBrowser(fail=True))
     assert f["way_in"] == "none found: no client let in"
-    assert (f["level"]["level"], f["level"]["label"]) == (5, "nothing let in")
+    assert (f["level"]["level"], f["level"]["state"]) == (None, "closed")
+    assert "- **Protection: closed.** Cloudflare lets no client in." in text
     assert "The browser could not run (RuntimeError: Chrome is not installed)." in f["level"]["said"]
     assert "Not run on" in text and "Chrome is not installed" in text
     assert f["session"]["skipped"] == "no client let in"
     assert "no client let in" in f["burst"]["skipped"]
 
-    f, text, _ = scan(Wall(), burst=False)  # a browser that passes: level 4
-    assert (f["level"]["level"], f["level"]["label"]) == (4, "a challenge for every client")
+    f, text, _ = scan(Wall(), burst=False)  # a browser that passes: level 5, only a real browser gets in
+    assert (f["level"]["level"], f["level"]["label"]) == (5, "a challenge for every client")
     assert f["level"]["said"].startswith("Cloudflare challenges every client")
     assert "A real browser is let in and gets cf_clearance" in f["level"]["said"]
 
@@ -390,7 +391,7 @@ def test_a_home_page_redirecting_to_a_captcha_is_no_way_in():
     f, text, _ = scan(FakeSite(home_captcha=True), burst=False)
     assert f["home_redirect"] == "302 to /captcha/?from=/: not followed (a block)"
     assert f["let_in"] == []
-    assert f["level"]["level"] == 5, "not 'level 0, nothing refused'"
+    assert f["level"]["state"] == "closed", "not 'level 0, nothing refused'"
     assert "The home page redirects 302 to /captcha/?from=/: not followed (a block)" in text
 
 

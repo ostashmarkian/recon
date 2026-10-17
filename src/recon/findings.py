@@ -39,28 +39,29 @@ def summary(a: Answer) -> dict[str, Any]:
 # the "why" of a refusal that names who refused; a plain 403 gives a page title instead
 KNOWN_REFUSERS = {"AWS CloudFront", "a captcha page"} | set(GUARDS)
 
+# The scale, by what stands in front and what it let in: 5 is a challenge only a real browser passes. A site that
+# lets not even a browser in is "closed", and one where no client got an answer is "not judged": neither is a level
 LEVELS = (
     "none seen",
     "a service in front, no client turned away",
     "a filter by name",
     "a filter by fingerprint",
+    "a bot manager in front",
     "a challenge for every client",
-    "nothing let in",
 )
 
 
-# Bot products that score each client over its session, by what showed them in vendors_of(): a short run can be
-# let in where a long one is challenged. Akamai counts with its Bot Manager cookies; Cloudflare with __cf_bm, which
-# its own reference says Bot Management and Bot Fight Mode set for the bot score; a WAF's or a CDN's rules are not here
+# Bot products that score each client over its session, by what showed them in vendors_of(): let in now, a long run
+# can be turned away. Akamai counts with its Bot Manager cookies; Cloudflare with __cf_bm, which its own reference
+# says Bot Management and Bot Fight Mode set for the bot score. A WAF's or a CDN's rules are not here
 SCORERS = {
     "Akamai": ("Bot Manager", "Akamai Bot Manager"),
-    "Cloudflare": ("__cf_bm", "Cloudflare's bot detection (__cf_bm)"),
+    "Cloudflare": ("__cf_bm", "Cloudflare's bot detection"),
     "DataDome": ("", "DataDome"),
     "HUMAN (PerimeterX)": ("", "HUMAN (PerimeterX)"),
     "Kasada": ("", "Kasada"),
     "Myra Security": ("", "Myra Security"),
 }
-EXPECTED = 4  # what a long run behind one can meet: a challenge, or a block
 
 
 def scorers(f: Findings) -> dict[str, str]:
@@ -105,7 +106,8 @@ def browser_said(browser: dict[str, Any]) -> str:
 
 
 def protection_level(f: Findings) -> dict[str, Any]:
-    """How hard the site is to get into, 0 to 5, from what this run saw, in words; and what one run cannot see."""
+    """How hard the site is to get into, 0 to 5, or "closed" or "not judged", from what this run saw, in words;
+    and what one run cannot see."""
     vendors = f.get("vendors") or {}
     rows = f.get("clients") or []
     let_in = f.get("let_in") or []
@@ -117,8 +119,19 @@ def protection_level(f: Findings) -> dict[str, Any]:
     named = Counter(r["why"] for r in rows if r["verdict"] in REFUSALS and r["why"] in KNOWN_REFUSERS)
     refusers = [w for w, _ in named.most_common()]  # services only: a page's title is no one's name
     who = ", ".join(refusers) or "; ".join(guards) or "The site"
-    if not let_in and turned:
-        level = 4 if browser.get("passed") else 5
+    scoring = scorers(f)
+    long = f.get("long") or {}
+    late = long.get("refused") or {}  # turned away late in the long session: a 429 is a limit, the rest more
+    late_turned = bool(late) and late.get("verdict") != "limited"
+
+    level: int | None
+    state: str | None = None
+    if not let_in and not turned:
+        level, state = None, "unknown"
+    elif not let_in:
+        level, state = (5, None) if browser.get("passed") else (None, "closed")
+    elif scoring or late_turned:
+        level = 4
     elif turned:
         level = 3
     elif f.get("ua_filter"):
@@ -128,35 +141,16 @@ def protection_level(f: Findings) -> dict[str, Any]:
     else:
         level = 0
 
-    if not let_in and not turned:
+    tried = len(dict.fromkeys(r["client"] for r in rows))
+    clients = f"all {tried}" if len(let_in) == tried else f"{len(let_in)} of {tried}"
+    verdicts = sorted({r["verdict"] for r in rows if r["client"] in turned and r["verdict"] in (*REFUSALS, "dropped")})
+    turned_said = (
+        f"{', '.join(client_name(k) for k in turned)} ({', '.join(verdicts)}) with a browser User-Agent;"
+        f" let in: {', '.join(client_name(k) for k in let_in)}."
+    )
+    if state == "unknown":
         said = "No client got an answer in time: the protection could not be judged."
-    elif level == 0:
-        said = "Nothing in front; no client or User-Agent turned away."
-    elif level == 1:
-        said = f"{'; '.join(guards) or ', '.join(vendors)} in front; no client or User-Agent turned away."
-    elif level == 2:
-        tried = len(dict.fromkeys(r["client"] for r in rows))
-        clients = f"all {tried}" if len(let_in) == tried else f"{len(let_in)} of {tried}"
-        said = (
-            f"{'; '.join(guards) or 'The site'} refuses User-Agents by name ({f['ua_filter']}); "
-            f"{clients} clients with a browser User-Agent are let in, no challenge seen."
-        )
-    elif level == 3:
-        verdicts = sorted(
-            {r["verdict"] for r in rows if r["client"] in turned and r["verdict"] in (*REFUSALS, "dropped")}
-        )
-        said = (
-            f"{who} turns away {', '.join(client_name(k) for k in turned)} ({', '.join(verdicts)}) "
-            f"with a browser User-Agent; let in: {', '.join(client_name(k) for k in let_in)}."
-        )
-        if all(k.startswith("httpx") for k in turned) and any(k.startswith("curl-") for k in let_in):
-            said += " Python's own TLS is what is turned away: the TLS fingerprint decides."
-            if "httpx-h1-pha" in let_in and "httpx-h2-pha" in turned:
-                said += " httpx with PHA passes over HTTP/1.1 only, so the HTTP/2 fingerprint counts too."
-        said += browser_said(browser)
-    elif level == 4:
-        said = f"{who} challenges every client, a browser User-Agent or not." + browser_said(browser)
-    else:
+    elif state == "closed":
         if browser.get("error"):
             tail = f" The browser could not run ({browser['error']})."
         elif browser:
@@ -164,20 +158,61 @@ def protection_level(f: Findings) -> dict[str, Any]:
         else:
             tail = " The refusals were no challenges, so no browser was tried."
         said = f"{who} lets no client in." + tail
+    elif level == 5:
+        said = f"{who} challenges every client, a browser User-Agent or not: only a real browser gets in."
+        said += browser_said(browser)
+    elif level == 4:
+        if scoring:
+            shown = [g for g in guards if g.split(" (")[0].startswith(tuple(scoring))]
+            said = (
+                f"{'; '.join(shown) or ' and '.join(scoring.values())} {'score' if len(scoring) > 1 else 'scores'}"
+                f" every client over its session: {clients} clients with a browser User-Agent let in now,"
+                " a long run can be turned away"
+                + ("." if long and not long.get("skipped") else " (--long measures it).")
+            )
+        else:
+            said = f"{clients[:1].upper()}{clients[1:]} clients with a browser User-Agent were let in at first."
+        if turned:
+            said += " Turned away: " + turned_said
+        elif f.get("ua_filter"):
+            said += f" User-Agents refused by name: {f['ua_filter']}."
+    elif level == 3:
+        said = f"{who} turns away " + turned_said
+        if all(k.startswith("httpx") for k in turned) and any(k.startswith("curl-") for k in let_in):
+            said += " Python's own TLS is what is turned away: the TLS fingerprint decides."
+            if "httpx-h1-pha" in let_in and "httpx-h2-pha" in turned:
+                said += " httpx with PHA passes over HTTP/1.1 only, so the HTTP/2 fingerprint counts too."
+        said += browser_said(browser)
+    elif level == 2:
+        said = (
+            f"{'; '.join(guards) or 'The site'} refuses User-Agents by name ({f['ua_filter']}); "
+            f"{clients} clients with a browser User-Agent are let in, no challenge seen."
+        )
+    elif level == 1:
+        said = f"{'; '.join(guards) or ', '.join(vendors)} in front; no client or User-Agent turned away."
+    else:
+        said = "Nothing in front; no client or User-Agent turned away."
 
     if silent and let_in:
         said += f" No answer in time from {', '.join(client_name(k) for k in silent)}: not counted as turned away."
+    # a WAF's rules: what was seen is what they do now
+    ruled = [v for v in vendors if v in GUARDS and v not in scoring]
+    if ruled and level is not None and level <= 3:
+        said += (
+            f" {', '.join(ruled)} {'act' if len(ruled) > 1 else 'acts'} on the site owner's rules:"
+            " what this run saw holds until they change."
+        )
 
-    label = LEVELS[level]
+    label = LEVELS[level] if level is not None else ("closed" if state == "closed" else "not judged")
+    if level == 4 and not scoring:
+        label = "a long session turned away"
     # a rate limit: refused with several at a time, or a 429 at any pace; another refusal one at a time is a page's
     elsewhere = f.get("refused_elsewhere") or {}
     limits = [step for step, got in elsewhere.items() if "limited" in got]
     rate = (["the session test, 4 at a time"] if (f.get("session") or {}).get("refused") else []) + (
         [f"{', '.join(limits)} (429, one at a time)"] if limits else []
     )
-    long = f.get("long") or {}
-    late = long.get("refused") or {}  # turned away late in the long session: a 429 is a limit, the rest more
-    if late.get("verdict") == "limited":
+    if late and not late_turned:
         rate.append(f"the long session (429 at request {late['at']}, {late['minutes']} min in)")
     others = {step: {v: n for v, n in got.items() if v != "limited"} for step, got in elsewhere.items()}
     others = {step: got for step, got in others.items() if got}
@@ -191,35 +226,18 @@ def protection_level(f: Findings) -> dict[str, Any]:
         said += f" A rate limit: refused in {'; '.join(rate)}."
         if level == 0:
             level, label = 1, "a rate limit"
-
-    # what a long run can meet: the level seen, or more behind a service that scores clients over a session
-    scoring = scorers(f)
-    expected = max(level, EXPECTED) if scoring else level
-    if scoring and level < EXPECTED:
-        said += (
-            f" {' and '.join(scoring.values())} {'score' if len(scoring) > 1 else 'scores'} every client over a"
-            " session: a long run can be challenged or blocked though this one was let in"
-            + ("." if long and not long.get("skipped") else " (--long measures it).")
-        )
-    ruled = [v for v in vendors if v in GUARDS and v not in scoring]  # a WAF's rules: what is seen is what they do
-    if ruled and level < EXPECTED:
-        said += (
-            f" {', '.join(ruled)} {'act' if len(ruled) > 1 else 'acts'} on the site owner's rules:"
-            " what this run saw holds until they change."
-        )
-    if late and late.get("verdict") != "limited":
+    if late_turned:
         by = f", {late['why']}" if late.get("why") else ""
         said += (
             f" A long session was turned away at request {late['at']}, {late['minutes']} min in"
             f" ({late['status']} {late['verdict']}{by})."
         )
-        expected = max(expected, EXPECTED)
     elif long.get("asked") and not late and not long.get("lost"):
         said += f" A long session of {long['minutes']} min ({long['asked']} requests) was not refused."
 
     if long.get("asked"):
         unseen = f"limits past {long['minutes']} min of one session, the IP's reputation"
-    elif guards or level >= 2:
+    elif guards or (level or 0) >= 2:
         unseen = "limits over a long session, behaviour scoring, the IP's reputation"
     elif (f.get("burst") or {}).get("steps") and not (f.get("burst") or {}).get("stop"):
         unseen = "a limiter that allows a larger burst than recon's"
@@ -227,10 +245,10 @@ def protection_level(f: Findings) -> dict[str, Any]:
         unseen = "limits past the pace recon kept"
     return {
         "level": level,
+        "state": state,
         "label": label,
         "said": said,
         "unseen": unseen,
-        "expected": expected,
         "scorers": list(scoring.values()),
     }
 
@@ -353,14 +371,12 @@ def compare(prev: Findings, f: Findings) -> list[str]:
         [re.sub(r" on [^;]+", "", p) for p in prev.get("protection") or []],
         [re.sub(r" on [^;]+", "", p) for p in f.get("protection") or []],
     )
-    note(
-        "protection level",
-        (prev.get("level") or {}).get("level"),
-        (f.get("level") or {}).get("level"),
-        "level",
-    )
-    if "expected" in (prev.get("level") or {}):  # older reports have none
-        note("expected level", prev["level"]["expected"], (f.get("level") or {}).get("expected"))
+
+    def grade(r: Findings) -> Any:  # a level, or "closed" or "unknown" off the scale
+        level = r.get("level") or {}
+        return level.get("level") if level.get("level") is not None else level.get("state")
+
+    note("protection level", grade(prev), grade(f), "level")
     note("in front", sorted(prev.get("vendors") or {}), sorted(f.get("vendors") or {}))
     note("clients let in", prev.get("let_in"), f.get("let_in"))
     note("way in", prev.get("way_in"), f.get("way_in"))

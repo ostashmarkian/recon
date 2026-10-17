@@ -101,15 +101,15 @@ def report(f: Findings) -> str:
         return "\n".join(out) + "\n\n"
     level = f.get("level") or {}
     if level:
-        expected = level.get("expected", level["level"])
-        more = f"; up to {expected} expected over a long run" if expected > level["level"] else ""
-        out.append(f"- **Protection: level {level['level']} of 5, {level['label']}{more}.** {level['said']}")
+        n = level.get("level")
+        grade = f"level {n} of 5, {level['label']}" if n is not None else level["label"]
+        out.append(f"- **Protection: {grade}.** {level['said']}")
         if f["protection"]:
             out.append("  - seen: " + "; ".join(f["protection"]))
         out.append(f"  - not seen in one run: {level['unseen']}")
     else:
         out.append("- **Protection:** " + ("none found" if not f["protection"] else "; ".join(f["protection"])))
-    if f.get("ua_filter") and level.get("level") != 2:  # level 2 is this filter, said above
+    if f.get("ua_filter") and f["ua_filter"] not in level.get("said", ""):  # said above in the level
         out.append(f"- **User-Agent filter:** {f['ua_filter']} (not protection here: the burst sends a browser's)")
     out.append(f"- **Way in:** {f['way_in']}")
     if session.get("skipped"):

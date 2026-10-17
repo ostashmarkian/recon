@@ -2,19 +2,23 @@
 
 ## Unreleased
 
-- **Two levels: seen and expected.** A service that scores each client over its
-  session can let a short run in and turn a long one away. With one in front,
-  the headline reads "level 2 of 5, a filter by name; up to 4 expected over a
-  long run". It is recognised by its bot product's markers: Akamai's Bot Manager
-  cookies, Cloudflare's `__cf_bm`, DataDome, HUMAN, Kasada, Myra. A WAF that acts
-  on its owner's rules raises nothing, and the verdict says that what was seen
-  holds until those rules change.
+- **A new scale.** The top of the old one, "nothing let in, not even a browser",
+  was only an unreachable site. Now:
+  - 4 is a bot manager in front: a service that scores each client over its
+    session, so a short run is let in and a long one can be turned away. It is
+    recognised by its bot product's markers: Akamai's Bot Manager cookies,
+    Cloudflare's `__cf_bm`, DataDome, HUMAN, Kasada, Myra. A WAF that acts on its
+    owner's rules stays at what was seen, and the verdict says that this holds
+    until the rules change;
+  - 5 is a challenge for every client, where only a real browser gets in;
+  - a site that lets not even a browser in is "closed", and one where no client
+    got an answer is "not judged". Neither is on the scale.
 - **`--long [MIN]`:** one cookie jar walks the pages robots.txt allows for MIN
   minutes (15), a request every 5 to 10 s, and stops at the first refusal. The
   report says at which request and minute, and the level takes it in: a 429 is
-  a rate limit, any other refusal makes 4 expected. Its refusal keeps the burst
-  off. It runs behind protection too, since it is slower than the rest.
-- 174 tests.
+  a rate limit, any other refusal is level 4. Its refusal keeps the burst off.
+  It runs behind protection too, since it is slower than the rest.
+- 175 tests.
 
 ## 1.1.0 - 2026-10-17
 

@@ -173,22 +173,24 @@ The verdict opens with a protection level, from what the run saw:
 | 1 | a service in front (a CDN, an anti-bot service), no client turned away; or a rate limit (a 429, or refusals with several requests at a time) |
 | 2 | a filter by name: bot and tool User-Agents refused, any client with a browser User-Agent let in |
 | 3 | a filter by fingerprint: some clients turned away even with a browser User-Agent (TLS, HTTP/2), others let in |
-| 4 | a challenge for every client: only a real browser gets in |
-| 5 | nothing let in, not even a browser |
+| 4 | a bot manager in front: every client let in now, but it scores each one over its session, so a long run can be turned away |
+| 5 | a challenge for every client: only a real browser gets in (whether its cookie then carries over to the clients is in **Way in**) |
+| closed | not on the scale: not even a browser got in, or the refusals were no challenge a browser could pass |
+| not judged | no client got an answer in time |
 
 It says who refused, what got through, and what one run cannot see, such as
 limits over a long session.
 
-A short run can be let in where a long one is not. When a service that scores
-each client over its session is in front, the headline adds what a long run
-can meet: "level 2 of 5, a filter by name; up to 4 expected over a long run".
-Such a service is recognised by its bot product's own markers, not by the
-vendor's name alone: Akamai with its Bot Manager cookies, Cloudflare with
-`__cf_bm` (set by its Bot Management and Bot Fight Mode), DataDome, HUMAN,
-Kasada, Myra. A WAF that acts on its owner's rules raises nothing: what the run
-saw is what those rules do, until they change. `--long` measures it: one
-cookie jar walks the site for 15 minutes, a request every 5-10 s, and the
-report says at which request and minute it was turned away, if it was.
+Level 4 is about what stands in front, because a short run can be let in
+where a long one is not. A bot manager is recognised by its own product's
+markers, not by the vendor's name alone: Akamai with its Bot Manager cookies,
+Cloudflare with `__cf_bm` (set by its Bot Management and Bot Fight Mode),
+DataDome, HUMAN, Kasada, Myra. A WAF that acts on its owner's rules stays at
+what the run saw, and the verdict says that this holds until the rules change.
+`--long` shows whether a bot manager acts: one cookie jar walks the site for 15
+minutes, a request every 5-10 s, and the report says at which request and
+minute it was turned away, if it was. A long session turned away is level 4 as
+well; a 429 there is a rate limit.
 
 Every answer is classified the same way. It is `ok`, `redirect`, `gone`,
 `client-error`, `server-error`, a refusal (`challenge`, `blocked`, `refused`,
@@ -256,7 +258,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 174 tests, offline, ~80 s
+pytest                                       # 175 tests, offline, ~85 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```
