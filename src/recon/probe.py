@@ -95,7 +95,7 @@ from urllib.parse import urljoin, urlsplit
 
 from . import settings
 from .browser import open_in_browser, watch_in_browser
-from .calls import call_record, rank
+from .calls import call_record, rank, replay_headers, shape
 from .classify import LOST, REFUSALS, judge, title_of, vendors_of
 from .clients import Answer, Client, make_client
 from .findings import (
@@ -828,11 +828,66 @@ class Recon:
             f["watch"] = {"error": f"{type(e).__name__}: {e}"[:300]}
             return
         self.requests += len(seen.get("pages") or [])
-        pages = []
+        pages, found = [], []
         for page in seen.get("pages") or []:
-            calls = sorted((call_record(c, self.host) for c in page.get("calls") or []), key=rank)
+            records = sorted(
+                ((call_record(c, self.host), c) for c in page.get("calls") or []), key=lambda r: rank(r[0])
+            )
+            found += records
+            calls = [record for record, _ in records]
             pages.append({"url": page["url"], "status": page.get("status"), "title": page.get("title"), "calls": calls})
+        await self.replay(found)
         f["watch"] = {"seconds": seen.get("seconds"), "pages": pages}
+
+    async def replay(self, found: list[tuple[dict[str, Any], dict[str, Any]]]) -> None:
+        """The site's own product lists the pages fetched, REPLAY_MOST at most, asked once more with the plain
+        client let in and no cookie or token: does the API work without the browser? Each record gets a
+        "replay" saying so, or why it was not asked."""
+        asked: set[tuple[str, str]] = set()  # each endpoint once, over all the pages
+        made = 0  # requests made: a call not asked again does not count
+        client = None
+        try:
+            for record, call in found:
+                fragment = record["kind"] == "html" and record.get("product_links", 0) >= 3
+                if not record["own"] or not (record["kind"] == "products" or fragment):
+                    continue
+                parts = urlsplit(call["url"])
+                key = (call["method"], parts.path)
+                if key in asked or made >= settings.REPLAY_MOST:
+                    continue
+                asked.add(key)
+                body = call.get("sent") or ""
+                if call["method"] not in ("GET", "POST") or SKIPPED_PATHS.search(f"{parts.path}?{parts.query}"):
+                    record["replay"] = {"skipped": "it may change the site's state"}
+                    continue
+                if "mutation" in body.lower():
+                    record["replay"] = {"skipped": "a GraphQL mutation"}
+                    continue
+                if not self.robots.allows(call["url"]):
+                    record["replay"] = {"skipped": "robots.txt disallows it"}
+                    continue
+                if self.best is None:
+                    break
+                client = client or self.make(self.best, ua=self.ua_for(self.best))
+                made += 1
+                data = body.encode() if call["method"] == "POST" else None
+                a = await self.get(client, call["url"], headers=replay_headers(call.get("headers") or {}), data=data)
+                self.keep(a)
+                got = shape(a.body[: settings.WATCH_BODY], a.headers.get("content-type", ""))
+                works = judge(a)[0] == "ok" and got["kind"] == record["kind"]
+                if works and record["kind"] == "products":  # as many items: no shorter list for a stranger
+                    works = got.get("items", 0) * 2 >= record.get("items", 0)
+                record["replay"] = {
+                    "client": self.best,
+                    "status": a.status,
+                    "verdict": judge(a)[0],
+                    "kind": got["kind"],
+                    "items": got.get("items"),
+                    "works": works,
+                }
+        finally:
+            if client:
+                await client.aclose()
 
     async def long_session(self) -> None:
         """One cookie jar, the home page and then pages robots.txt allows, one request every LONG_PAUSE s

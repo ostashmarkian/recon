@@ -103,13 +103,18 @@ async def watch_in_browser(urls: list[str], wait: float = settings.WATCH_WAIT) -
                             body = (await a.body())[: settings.WATCH_BODY]
                         except Exception:  # a redirect or an answer gone with the page
                             body = b""
+                        try:  # what the page sent, cookies and tokens with it: their names are reported, not values
+                            sent_headers = await request.all_headers()
+                        except Exception:
+                            sent_headers = dict(request.headers)
                         calls.append(
                             {
                                 "method": request.method,
                                 "url": a.url,
                                 "status": a.status,
                                 "type": a.headers.get("content-type", ""),
-                                "sent": (request.post_data or "")[:500],
+                                "sent": (request.post_data or "")[: settings.WATCH_SENT],
+                                "headers": sent_headers,
                                 "body": body,
                             }
                         )

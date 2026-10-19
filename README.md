@@ -103,6 +103,11 @@ product page read, each not-found probe. See the full report:
   product links, a GraphQL operation. The catalogue's own API usually shows
   only there. It sees what a page asks for as it opens and scrolls: a call
   made only on a click, such as a next-page button, does not show.
+- Each product list the site's own API answered is then asked once more with
+  the plain client the site lets in, with no cookie and no token. The report
+  says whether the API works without the browser, and if not, what the page
+  sent beyond a browser's usual headers: `authorization`, `x-csrf-token`, its
+  cookies. It gives their names, never their values.
 
 **Data quality**
 - Reads schema.org Product data (JSON-LD and microdata), product meta tags, and
@@ -270,7 +275,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 192 tests, offline, ~95 s
+pytest                                       # 198 tests, offline, ~105 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```

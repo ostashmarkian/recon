@@ -100,6 +100,8 @@ WATCH_WAIT = 30
 WATCH_SETTLE = 2.0
 WATCH_CALLS = 60
 WATCH_BODY = 2_000_000
+WATCH_SENT = 20_000  # characters of a POST body kept, to ask it again
+REPLAY_MOST = 3  # product lists the pages fetch, asked once more with the plain client let in
 
 
 SESSION_PAGES = 12

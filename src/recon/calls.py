@@ -6,7 +6,31 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from .clients import cookie_names
 from .pages import HREF, PRODUCT_HINT
+
+# what every browser sends: a call that carries more needs it, a token, a key or a marker
+STANDARD = {
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "cache-control",
+    "connection",
+    "content-length",
+    "content-type",
+    "cookie",
+    "dnt",
+    "host",
+    "origin",
+    "pragma",
+    "priority",
+    "referer",
+    "te",
+    "upgrade-insecure-requests",
+    "user-agent",
+}
+# sent again when a call is asked once more without the browser: none of them is a secret
+REPLAYED = ("accept", "content-type", "x-requested-with")
 
 # the keys of a list's items that make it a catalogue, snake_case or camelCase: id, variant_id, VariantId, sku
 IDS = re.compile(
@@ -85,6 +109,20 @@ def shape(body: bytes, kind: str) -> dict[str, Any]:
     return {"kind": "other"}
 
 
+def sent_needs(headers: dict[str, str]) -> list[str]:
+    """What a page's call carried beyond what any browser sends: header names, never their values, and the
+    names of the cookies it sent."""
+    names = sorted(k.lower() for k in headers if k.lower() not in STANDARD and not k.lower().startswith("sec-"))
+    cookie = next((v for k, v in headers.items() if k.lower() == "cookie"), "")
+    return names + [f"cookie {c}" for c in cookie_names(cookie.split(";"))]
+
+
+def replay_headers(headers: dict[str, str]) -> dict[str, str]:
+    """The headers a call is asked again with: REPLAYED only, so no cookie and no token goes with it."""
+    lowered = {k.lower(): v for k, v in headers.items()}
+    return {k: lowered[k] for k in REPLAYED if k in lowered}
+
+
 def operation(sent: str) -> str | None:
     """A GraphQL call's operationName, from what was posted."""
     try:
@@ -110,6 +148,7 @@ def call_record(call: dict[str, Any], host: str) -> dict[str, Any]:
         "bytes": len(call["body"]),
         "own": own,
         "operation": operation(call["sent"]) if call.get("sent") else None,
+        "needs": sent_needs(call.get("headers") or {}),
         **shape(call["body"], call["type"]),
     }
 

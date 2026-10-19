@@ -1,9 +1,10 @@
 """Whole runs of recon against a FakeSite: what it found, what it asked, what the report says."""
 
 import asyncio
+import json
 
 import pytest
-from fakes import BASE, CHALLENGE, FakeBrowser, FakeClient, FakeSite, FakeWatcher, scan
+from fakes import BASE, CHALLENGE, LISTED, FakeBrowser, FakeClient, FakeSite, FakeWatcher, scan
 
 from recon import settings
 from recon.clients import Answer
@@ -458,19 +459,60 @@ def test_a_product_address_that_redirects_is_followed_once():
 
 
 class TestWatch:
-    def test_what_the_pages_fetch(self):
+    def test_what_the_pages_fetch(self, monkeypatch):
+        monkeypatch.setattr(settings, "REPLAY_MOST", 10)  # so only the one-per-endpoint rule keeps it to once
         site, watcher = FakeSite(), FakeWatcher()
         f, text, _ = scan(site, burst=False, watch=True, watcher=watcher)
         assert watcher.urls == [f"{BASE}/", f["product"]["url"], f"{BASE}/category/?page=2"]
         assert f["requests"] == len(site.asked) + 3, "a page Chrome opens counts as a request"
         first = f["watch"]["pages"][0]["calls"]
-        assert [c["kind"] for c in first] == ["products", "html", "data"], "the product list first"
-        assert (first[0]["own"], first[2]["own"]) == (True, False)
+        assert [c["kind"] for c in first] == ["products", "products", "html", "data"], "the product lists first"
+        assert (first[0]["own"], first[3]["own"]) == (True, False)
         assert (
-            "- **What the pages fetch:** 9 calls on 3 pages; GET /api/catalog/products?limit=24: a product list at"
-            " `products` (24: id, sku, name, price, stock); paging total, page" in text
+            "- **What the pages fetch:** 12 calls on 3 pages; GET /api/catalog/products?limit=24: a product list at"
+            " `products` (24: id, sku, name, price, stock); paging total, page; works with httpx HTTP/2 alone,"
+            " no cookie or token; GET /api/private/products?limit=24: a product list" in text
         )
+        assert "with httpx HTTP/2 alone: 401 refused; the page sent x-api-key, cookie sid, cookie basket" in text, (
+            "what the browser sent and the plain client did not"
+        )
+        assert first[2]["replay"]["works"], "the fragment too"
+        assert [p for _, _, p in site.asked].count("/api/catalog/products?limit=24") == 1, "asked again once"
         assert "## What the pages fetch, in Chrome" in text and "(abc-dsn.algolia.net)" in text
+
+    def test_no_cookie_or_token_value_is_kept_or_sent(self):
+        site = FakeSite()
+        f, text, _ = scan(site, burst=False, watch=True, watcher=FakeWatcher())
+        for secret in ("secret-key-123", "abc123"):
+            assert secret not in text and secret not in json.dumps(f, default=str), secret
+        assert all("x-api-key" not in (headers or {}) for _, _, headers in site.sent), "replayed without the key"
+
+    def test_what_is_not_asked_again(self):
+        def call(url: str, sent: str = "") -> dict:
+            method = "POST" if sent else "GET"
+            return {
+                "method": method,
+                "url": url,
+                "status": 200,
+                "type": "application/json",
+                "sent": sent,
+                "body": LISTED,
+            }
+
+        extra = (
+            call(f"{BASE}/graphql", '{"query": "mutation { addToCart(id: 1) }"}'),
+            call("https://api.searchanise.com/getresults?q=x"),
+            call(f"{BASE}/api/short/products"),
+        )
+        site = FakeSite(disallow="/api/private/")
+        f, _, _ = scan(site, burst=False, watch=True, watcher=FakeWatcher(extra=extra))
+        replays = {c["url"].removeprefix(BASE): c.get("replay") for c in f["watch"]["pages"][0]["calls"]}
+        assert replays["/graphql"] == {"skipped": "a GraphQL mutation"}
+        assert replays["/api/private/products?limit=24"] == {"skipped": "robots.txt disallows it"}
+        assert replays["https://api.searchanise.com/getresults?q=x"] is None, "another host's API is not asked"
+        short = replays["/api/short/products"]
+        assert (short["works"], short["items"]) == (False, 3), "a shorter list for a stranger is no way in"
+        assert not [p for _, _, p in site.asked if p.startswith(("/graphql", "/api/private/"))]
 
     def test_not_past_a_site_that_lets_no_client_in(self):
         class Wall(FakeSite):

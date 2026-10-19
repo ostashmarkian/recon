@@ -53,6 +53,16 @@ PHP_WARNING = (
 )
 
 
+LISTED = json.dumps(
+    {
+        "products": [{"id": n, "sku": f"S-{n}", "name": f"Part {n}", "price": "1.50", "stock": 4} for n in range(24)],
+        "total": 40,
+        "page": 1,
+    }
+).encode()
+FRAGMENT = "".join(f'<a href="/product/{n}/">p</a>' for n in range(10)).encode()
+
+
 def sitemap_index() -> bytes:
     return (
         f"<sitemapindex><sitemap><loc>{BASE}/sitemap-1.xml</loc></sitemap>"
@@ -121,6 +131,7 @@ class FakeSite:
         self.in_flight = 0
         self.most_in_flight = 0  # the most requests out at once
         self.posts: list[str] = []  # paths asked with a body
+        self.sent: list[tuple[str, str, dict | None]] = []  # (client kind, path, the headers asked with)
         self.session = asyncio.Lock() if lock else None
 
     def answer(self, client: FakeClient, url: str, headers: dict) -> Answer:
@@ -138,6 +149,15 @@ class FakeSite:
             return Answer(url, 302, {**h, "location": "/captcha/?from=/"}, (), b"", 0.01, http=self.http)
         if path == "/" and self.home_moved:
             return Answer(url, 301, {**h, "location": "https://moved.test/"}, (), b"", 0.01, http=self.http)
+        if path == "/api/catalog/products":  # the list the pages fetch, open to any client
+            return Answer(url, 200, {**h, "content-type": "application/json"}, (), LISTED, 0.01, http=self.http)
+        if path == "/api/short/products":  # a stranger gets 3 of the 24 a visitor gets
+            few = json.dumps({"products": json.loads(LISTED)["products"][:3]}).encode()
+            return Answer(url, 200, {**h, "content-type": "application/json"}, (), few, 0.01, http=self.http)
+        if path == "/api/private/products":  # the same, only with a key the page holds
+            return Answer(url, 401, h, (), b'{"error": "no key"}', 0.01, http=self.http)
+        if path == "/ajax/listing":
+            return Answer(url, 200, {**h, "content-type": "text/html"}, (), FRAGMENT, 0.01, http=self.http)
         if path.startswith("/products/highlights/"):  # a shop's marketing pages under /products/
             body = b"<html><title>Our ranges</title><p>Capacitors for every need</p></html>"
             return Answer(url, 200, h, (), body, 0.01, http=self.http)
@@ -203,6 +223,7 @@ class FakeClient:
     async def fetch(self, url: str, headers: dict | None = None, data: bytes | None = None) -> Answer:
         site = self.site
         site.asked.append((self.kind, self.ua, url.removeprefix(BASE)))
+        site.sent.append((self.kind, url.removeprefix(BASE), headers))
         if self.kind in site.silent_for:
             return Answer(url, error="TimeoutError: no answer within 90 s", seconds=90)
         began = asyncio.get_running_loop().time()
@@ -264,16 +285,15 @@ class FakeWatcher:
     """watch_in_browser as Chrome would answer: every page fetches a product list from the shop's own API,
     a search service's query and an HTML fragment of product links; or Chrome is not there."""
 
-    def __init__(self, fail: bool = False):
-        self.fail, self.urls = fail, []
+    def __init__(self, fail: bool = False, extra: tuple[dict, ...] = ()):
+        self.fail, self.urls, self.extra = fail, [], extra
 
     async def __call__(self, urls: list[str]) -> dict:
         self.urls.extend(urls)
         if self.fail:
             raise RuntimeError("Chrome is not installed")
-        products = [{"id": n, "sku": f"S-{n}", "name": f"Part {n}", "price": "1.50", "stock": 4} for n in range(24)]
-        listed = json.dumps({"products": products, "total": 40, "page": 1}).encode()
-        fragment = "".join(f'<a href="/product/{n}/">p</a>' for n in range(10)).encode()
+        listed, fragment = LISTED, FRAGMENT
+        browser = {"accept": "application/json", "sec-fetch-mode": "cors", "user-agent": "Chrome"}
         calls = [
             {
                 "method": "GET",
@@ -281,6 +301,7 @@ class FakeWatcher:
                 "status": 200,
                 "type": "text/html",
                 "sent": "",
+                "headers": {**browser, "x-requested-with": "XMLHttpRequest"},
                 "body": fragment,
             },
             {
@@ -300,11 +321,22 @@ class FakeWatcher:
                 "body": listed,
             },
         ]
-        return {
-            "ua": "Chrome",
-            "seconds": 3.2,
-            "pages": [{"url": u, "status": 200, "title": "Shop", "calls": calls} for u in urls],
-        }
+        calls += [
+            {
+                "method": "GET",
+                "url": f"{BASE}/api/private/products?limit=24",
+                "status": 200,
+                "type": "application/json",
+                "sent": "",
+                "headers": {**browser, "x-api-key": "secret-key-123", "cookie": "sid=abc123; basket=7"},
+                "body": listed,
+            },
+            *self.extra,
+        ]
+        for call in calls:
+            call.setdefault("headers", browser)
+        pages = [{"url": u, "status": 200, "title": "Shop", "calls": [dict(c) for c in calls]} for u in urls]
+        return {"ua": "Chrome", "seconds": 3.2, "pages": pages}
 
 
 def scan(site: FakeSite, browser: FakeBrowser | None = None, **kw: Any) -> tuple[dict, str, FakeBrowser]:

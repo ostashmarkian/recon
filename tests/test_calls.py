@@ -5,7 +5,7 @@ import json
 from fakes import BASE
 
 from recon.browser import TRACKERS
-from recon.calls import call_record, json_shape, operation, rank, shape
+from recon.calls import call_record, json_shape, operation, rank, replay_headers, sent_needs, shape
 
 
 def items(n: int, **extra: object) -> list[dict[str, object]]:
@@ -43,6 +43,20 @@ def test_trackers_and_consent_are_left_out() -> None:
     ):
         assert TRACKERS.search(noise), noise
     assert not TRACKERS.search("https://www.gme.cz/api/product/get-availabilities")
+
+
+def test_what_a_call_needs_by_name_only() -> None:
+    sent = {
+        "Accept": "application/json",
+        "User-Agent": "Chrome",
+        "sec-fetch-mode": "cors",
+        "Authorization": "Bearer eyJ-secret",
+        "X-CSRF-Token": "t0k3n",
+        "X-Requested-With": "XMLHttpRequest",
+        "Cookie": "sid=abc; basket=7",
+    }
+    assert sent_needs(sent) == ["authorization", "x-csrf-token", "x-requested-with", "cookie sid", "cookie basket"]
+    assert replay_headers(sent) == {"accept": "application/json", "x-requested-with": "XMLHttpRequest"}
 
 
 def test_lists_that_are_no_catalogue() -> None:

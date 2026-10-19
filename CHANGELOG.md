@@ -41,7 +41,15 @@
   Analytics and ads are left out. The catalogue's own API usually shows only
   here, since a page's scripts call it. It runs only where a plain client was
   let in, and only on pages robots.txt allows.
-- 192 tests.
+- **Does the API work without the browser?** Each product list the site's own
+  API answered is asked once more with the plain client the site lets in, with
+  no cookie and no token: three endpoints at most, each once, only where
+  robots.txt allows. Calls that may change the site's state and GraphQL
+  mutations are never asked. The report says whether the list came back as
+  long. When it did not, the report says what the page sent beyond a browser's
+  usual headers: `authorization`, `x-csrf-token`, `x-requested-with`, its
+  cookies. It gives their names, never their values.
+- 198 tests.
 
 ## 1.1.0 - 2026-10-17
 

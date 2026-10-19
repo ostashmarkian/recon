@@ -60,6 +60,16 @@ def what_call(c: dict[str, Any]) -> str:
         said += "; paging " + ", ".join(c["paging"])
     if c.get("operation"):
         said += f"; GraphQL {c['operation']}"
+    replay = c.get("replay") or {}
+    if replay.get("skipped"):
+        said += f"; not asked again ({replay['skipped']})"
+    elif replay.get("works"):
+        said += f"; works with {client_name(replay['client'])} alone, no cookie or token"
+    elif replay:
+        got = f", {replay['kind']}" if replay["verdict"] == "ok" else ""
+        said += f"; with {client_name(replay['client'])} alone: {replay['status'] or '-'} {replay['verdict']}{got}"
+    if c.get("needs") and replay and not replay.get("works"):
+        said += "; the page sent " + ", ".join(c["needs"][:6])
     return said
 
 
