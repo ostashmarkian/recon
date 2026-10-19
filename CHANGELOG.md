@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-10-19
 
 - **A new scale.** The top of the old one, "nothing let in, not even a browser",
   was only an unreachable site. Now:
