@@ -232,6 +232,12 @@ def protection_level(f: Findings) -> dict[str, Any]:
             f" A long session was turned away at request {late['at']}, {late['minutes']} min in"
             f" ({late['status']} {late['verdict']}{by})."
         )
+    elif long.get("cut"):  # the local link went down and stayed down: the site was not judged past it
+        cut = long["link"][-1]
+        said += (
+            f" A long session was cut short at request {cut['at']}, {cut['minutes']} min in, by this machine's link,"
+            " not the site: inconclusive."
+        )
     elif long.get("asked") and not late and not long.get("lost"):
         said += f" A long session of {long['minutes']} min ({long['asked']} requests) was not refused."
 
@@ -338,10 +344,12 @@ def not_found_findings(rows: list[dict[str, Any]]) -> list[str]:
 def present(f: Findings) -> list[str]:
     """The product fields a report found, for comparing two reports."""
     p = f.get("product") or {}
+    held = ((p.get("state") or {}).get("product") or {}).get("fields") or {}
     return sorted(
         [f"JSON-LD {k}" for k in p.get("jsonld") or {}]
         + [f"microdata {k}" for k in p.get("microdata") or {}]
         + [f"label {k}" for k in p.get("labels") or {}]
+        + [f"page state {k}" for k in held]
     )
 
 
@@ -382,6 +390,12 @@ def compare(prev: Findings, f: Findings) -> list[str]:
     note("way in", prev.get("way_in"), f.get("way_in"))
     note("User-Agent filter", prev.get("ua_filter"), f.get("ua_filter"), "ua_filter")
     note("platform", [p["name"] for p in prev.get("platforms") or []], [p["name"] for p in f.get("platforms") or []])
+    note(
+        "API bases",
+        sorted(b["url"] for b in (prev.get("api") or {}).get("bases") or []),
+        sorted(b["url"] for b in (f.get("api") or {}).get("bases") or []),
+        "api",
+    )
     note("session lock", (prev.get("session") or {}).get("lock"), (f.get("session") or {}).get("lock"))
     note("product data", present(prev), present(f), "product")
     note(

@@ -203,3 +203,24 @@ def test_notes_on_a_site(tmp_path: Path) -> None:
         "mentions": 2,
     }
     assert notes_on("shop.test", []) is None
+
+
+def test_a_long_session_cut_by_the_local_link_is_not_judged() -> None:
+    outage = {"at": 14, "minutes": 4.5, "url": "u", "why": "ReadError", "back": False, "waited": 10.5}
+    f = {
+        "clients": [OK_ROW],
+        "let_in": ["httpx-h2"],
+        "vendors": {},
+        "long": {"asked": 14, "minutes": 15.0, "refused": None, "lost": None, "link": [outage], "cut": True},
+    }
+    level = protection_level(f)
+    assert level["level"] == 0, "no level raised by this machine's link"
+    assert "cut short at request 14, 4.5 min in, by this machine's link, not the site: inconclusive." in level["said"]
+    assert "was not refused" not in level["said"]
+
+
+def test_an_api_base_that_changed() -> None:
+    before = {**BEFORE, "api": {"bases": [{"url": "https://api.a.test"}]}}
+    after = {**BEFORE, "api": {"bases": [{"url": "https://api.b.test"}]}}
+    assert compare(before, after) == ["API bases: https://api.a.test -> https://api.b.test"]
+    assert compare(BEFORE, after) == [], "an older report, made before recon read the API"

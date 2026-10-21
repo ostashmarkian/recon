@@ -44,11 +44,15 @@ def arguments(argv: list[str] | None = None) -> argparse.Namespace:
         "--notes", type=Path, help=f"a folder of Markdown notes to look the site up in (or ${settings.NOTES_ENV})"
     )
     p.add_argument(
-        "--watch",
-        action="store_true",
-        help="open the home page, the product page and a listing in Chrome and list the JSON and HTML fragments "
-        "they fetch: where the catalogue's own API shows (needs patchright and Chrome)",
+        "--no-watch",
+        dest="watch",
+        action="store_false",
+        help="do not open the home page, the product page and a listing in Chrome to list the JSON and HTML "
+        "fragments they fetch (done by default where patchright and Chrome are there)",
     )
+    # the watch is on by default: --watch is kept for old command lines, and does nothing
+    p.add_argument("--watch", dest="watch", action="store_true", help=argparse.SUPPRESS)
+    p.set_defaults(watch=True)
     p.add_argument(
         "--long",
         nargs="?",

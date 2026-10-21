@@ -14,11 +14,12 @@ would by hand, and writes up what it found. It answers:
 - what protects the site;
 - which HTTP client gets in;
 - how fast the site can be read;
-- where its catalogue lives;
+- where its catalogue lives, its own API among it;
 - whether its product data is clean enough to use.
 
-One run takes about a minute and about 100 polite requests, plus up to 350 for the load test on sites
-that nothing protects.
+One run takes a minute or two and about 100 polite requests, up to 30 more for the site's JS files and a few
+for its API, and three pages in Chrome where it is installed; plus up to 350 for the load test on sites that
+nothing protects.
 
 ## Contents
 
@@ -76,7 +77,8 @@ product page read, each not-found probe. See the full report:
   Firefox. Run on the home page, a product page and robots.txt.
 - 13 User-Agents, from Chrome to `python-requests`, `Scrapy` and AI crawlers.
 - Detects Cloudflare, Akamai, Imperva, DataDome, HUMAN, Sucuri, Kasada, F5,
-  AWS WAF, Vercel, Myra and common CDNs from headers, cookies and challenge pages.
+  AWS WAF, Vercel, Myra, Alibaba Cloud and common CDNs from headers, cookies,
+  challenge pages and a host's CNAME.
 - When something is challenged, opens real Chrome (via patchright) and checks
   whether its `cf_clearance` cookie lets the other clients in.
 
@@ -93,16 +95,43 @@ product page read, each not-found probe. See the full report:
 - Asks each platform's open API for its catalogue count: WooCommerce Store
   API, Shopify `products.json`, Magento and BigCommerce GraphQL, OpenCart's
   empty search.
-- Reads sitemaps, plain or gzipped, and finds search services (Algolia,
-  Searchanise, Klevu, Doofinder, Boost and others), `__NEXT_DATA__` blobs and
-  the API paths the pages call.
-- With `--watch`, opens the home page, the product page and a listing in
-  Chrome and lists the XHR and fetch calls they make. Each answer is read for
-  a scraper: a product list (where it sits, how many items, which of ids,
-  names, prices and stock they carry), its paging keys, an HTML fragment of
-  product links, a GraphQL operation. The catalogue's own API usually shows
-  only there. It sees what a page asks for as it opens and scrolls: a call
-  made only on a click, such as a next-page button, does not show.
+- Reads sitemaps, plain or gzipped, guessed where robots.txt names none,
+  redirects on the site followed and named, and finds search services
+  (Algolia, Searchanise, Klevu, Doofinder, Boost and others), `__NEXT_DATA__`
+  blobs and the API paths the pages call.
+
+**The site's own API, on every run**
+- Without a browser: the API bases the pages' runtime config names (Nuxt's
+  `window.__NUXT__.config`, Next.js's `__NEXT_DATA__`, an `apiHost` or
+  `API_URL` in a script). Each host is looked up in DNS: one with no public DNS
+  is the servers' own, named and never asked; a public one is asked once, for
+  its robots.txt, and the report says what stands in front of it, which can be
+  another service than the site's.
+- The routes the pages' own JS bundles name, with their methods, grouped as
+  lists and search, detail, stock and price; and a helper that adds
+  parameters to the calls (`addAntiSpiderParams`), with what it sets. Its own
+  bundles only: on the site's host, another host of its domain, or the CDN
+  its runtime config names (Nuxt's `cdnURL`, Next's `assetPrefix`).
+- What the pages' state holds (Nuxt 3's `__NUXT_DATA__`, Next.js's
+  `__NEXT_DATA__`): each product list's key path, its size and the counts
+  beside it, and the product a product page is about. A listing drawn on the
+  server shows its products here and in no XHR. The listing read is one found
+  to list products: one met on the way, else the product page's own category.
+- List or search routes found are asked with the plain client the site lets
+  in, no cookie or token: on the site's own API base first (one on its
+  domain, then one an `apiHost`, `API_URL` or `baseURL` key names), then the
+  other bases until one answers other than 404. Does it give JSON, whatever
+  its Content-Type? An answer that says what it lacks (`Either cate_id or
+  keyword is required`) is said to be an error message, and asked once more
+  with a value the run has: the product page's part number as its search
+  word, else a listing's category id.
+- Where patchright and Chrome are installed (`--no-watch` skips it), opens the
+  home page, the product page and a listing in Chrome and lists the XHR and
+  fetch calls they make. Each answer is read for a scraper: a product list
+  (where it sits, how many items, which of ids, names, prices and stock they
+  carry), its paging keys, an HTML fragment of product links, a GraphQL
+  operation. It sees what a page asks for as it opens and scrolls: a call made
+  only on a click, such as a next-page button, does not show.
 - Each product list the site's own API answered is then asked once more with
   the plain client the site lets in, with no cookie and no token. The report
   says whether the API works without the browser, and if not, what the page
@@ -110,9 +139,13 @@ product page read, each not-found probe. See the full report:
   cookies. It gives their names, never their values.
 
 **Data quality**
-- Reads schema.org Product data (JSON-LD and microdata), product meta tags, and
-  the page's own words for part number, maker, VAT and stock, in several
+- Reads schema.org Product data (JSON-LD and microdata), product meta tags, the
+  product in the page's state (a part number in `mpn`, `partNumber`, `pro_sno`),
+  and the page's own words for part number, maker, VAT and stock, in several
   languages.
+- Tells a listing from a product page (an ItemList of Products, several
+  Products side by side, a product list in its state, a page number) and keeps
+  listings out of the product page and the sample.
 - Samples 10 product pages and flags data traps:
   - an MPN that equals the SKU, or that is a GTIN, `4.84E+11` or `N/A`;
   - one MPN on several products;
@@ -140,7 +173,7 @@ python -m recon URL [options]
 | `--products N` | how many product pages to sample (default 10, `0` for none) |
 | `--browser` | open Chrome even when no client was challenged |
 | `--no-burst` | never run the burst test |
-| `--watch` | open three pages in Chrome and list the JSON and HTML fragments they fetch |
+| `--no-watch` | do not open three pages in Chrome to list the JSON and HTML fragments they fetch (done by default where patchright and Chrome are installed; `--watch` is still accepted and does nothing) |
 | `--long [MIN]` | also one slow session over MIN minutes (default 15), a request every 5-10 s: does a bot manager turn it away later? |
 | `--pause S` | seconds between requests (default 0.5, or robots.txt's `Crawl-delay` if longer) |
 | `--compare FILE` | compare with this earlier `.json` report (default: the newest one of the same host) |
@@ -171,7 +204,9 @@ flowchart LR
     F --> G[product page]
     G --> H[not-found pages]
     H --> S[sample of 10<br/>product pages]
-    S --> I[session lock]
+    S --> P[its own API:<br/>config, DNS,<br/>bundles, state]
+    P --> W[3 pages<br/>in Chrome]
+    W --> I[session lock]
     I --> J{protected?}
     J -- no --> K[burst]
     J -- yes --> L[report]
@@ -203,7 +238,15 @@ what the run saw, and the verdict says that this holds until the rules change.
 `--long` shows whether a bot manager acts: one cookie jar walks the site for 15
 minutes, a request every 5-10 s, and the report says at which request and
 minute it was turned away, if it was. A long session turned away is level 4 as
-well; a 429 there is a rate limit.
+well; a 429 there is a rate limit. An answer lost there is checked against two
+neutral hosts first: when they are silent too, this machine's link failed, not
+the site, and the session waits for it and goes on.
+
+An API host is judged on its own: its server, cookies and CNAME are named in
+the API line, and what stands in front of it does not change the site's level.
+Alibaba Cloud's WAF (its `acw_tc` and `cdn_sec_tc` cookies, the `acw_sc__v2`
+challenge) counts as a guard, since it bans an IP by its rate; its CDN alone
+(`Server: Tengine` with `EagleId` or `Via: ens-cache`) does not.
 
 Every answer is classified the same way. It is `ok`, `redirect`, `gone`,
 `client-error`, `server-error`, a refusal (`challenge`, `blocked`, `refused`,
@@ -216,14 +259,16 @@ The code is a package in `src/recon/`:
 | `probe` | `Recon`: runs the steps in order, the session test and the burst |
 | `clients` | the HTTP clients behind one `Client` protocol; `fetch()` returns an `Answer`, never raises |
 | `classify` | what one answer means, and which services stand in front |
-| `pages` | sitemaps, product data, made-up addresses, listings, freshness |
+| `pages` | sitemaps, product data, a listing told from a product page, made-up addresses, freshness |
 | `platforms` | platform markers and their open APIs |
 | `sample` | the product sample and its data traps |
 | `findings` | what the findings add up to: protection, the way in, changes since last time |
 | `report` | the Markdown report |
 | `robots` | robots.txt as RFC 9309 reads it, the same on every Python version |
 | `settings` | every tunable in one place |
-| `calls` | what the pages' own XHR and fetch calls answer: product lists, paging, fragments |
+| `calls` | what the pages' own XHR and fetch calls answer: product lists, paging, fragments, JSON by its body |
+| `api` | the site's own API without a browser: API bases in runtime configs, their hosts, routes in JS bundles |
+| `state` | a page's state (Nuxt's `__NUXT_DATA__`, Next.js's `__NEXT_DATA__`): its product lists and its product |
 | `browser`, `notes`, `cli` | Chrome via patchright, the notes folder, the command |
 
 ## Responsible use
@@ -245,13 +290,28 @@ or public sites whose terms permit it. It is careful by default:
   own words for these can slip past it;
 - a home page that redirects to another site stops the run: recon looks at the
   site it is given, and names the address to run it on;
-- any refusal, in any step, keeps the burst off;
-- `--watch` opens three pages robots.txt allows in Chrome, as a visitor would,
+- any refusal of the site's own pages, in any step, keeps the burst off. An
+  API route's 401 (a key it wants) and a refusal by an API host or a CDN are
+  theirs: reported with the API, they say nothing of the site's own guard;
+- the site's JS files are read one at a time like every page, 30 at most, only
+  its own (on its host, another host of its domain, or the CDN its runtime
+  config names, whose robots.txt is asked first) and only where robots.txt
+  allows. An API host is asked for its robots.txt once, and then only what
+  that allows: list or search routes, by GET, four requests at most, no
+  cookie or token. A host with no public DNS or a private address is never
+  asked anything, not even its robots.txt;
+- the API step never asks a POST route or a route that may change the site's
+  state. The watch's replay sends a page's own POST once more (a search query,
+  say), but never a GraphQL mutation or a route that may change the site's
+  state;
+- the watch opens three pages robots.txt allows in Chrome, as a visitor would,
   and only where a plain client was let in: it reads what a site shows, it is
   no way past a site that says no;
 - `--long` asks one page every 5-10 s (or the Crawl-delay), slower than the
   rest of the run, so it runs behind protection too; it stops at the first
-  refusal;
+  refusal. At an answer lost it asks a neutral host
+  (`https://www.cloudflare.com/cdn-cgi/trace`, then Google's `generate_204`),
+  and while those are silent too it waits 30 s at a time;
 - **the burst runs only when nothing protects the site.** Any anti-bot service
   in front, a browser-like client turned away, or a Crawl-delay turns it off.
   It stops at the first refusal, dropped connection or slowdown, and at
@@ -268,14 +328,17 @@ site that says no.
 - A sample of ten pages shows the shape of the data, not the whole catalogue.
 - Heuristics can pick a page that is not a product; pass `--page` if so.
 - The burst finds a lower bound, not the real limit.
-- Pages drawn by JavaScript are flagged, but their data is not read.
+- Pages drawn by JavaScript are flagged; their data is read only where it sits
+  in a state recon knows (Nuxt 3, Next.js, `window.__INITIAL_STATE__`).
+- API routes are read from the bundles' text: a route built from parts at run
+  time, or one loaded only after a click, does not show.
 
 ## Development
 
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 198 tests, offline, ~105 s
+pytest                                       # 275 tests, offline, ~160 s
 ruff check src tests && ruff format --check src tests
 mypy
 ```
@@ -284,8 +347,12 @@ The tests never touch the network. `tests/fakes.py` holds `FakeSite`, a
 stand-in shop with a sitemap, product pages and a listing. It can play many
 sites: Cloudflare challenging httpx, User-Agent filters, a session lock, a
 rate limit, dropped connections, a slowing server, soft 404s, a wrapping
-listing, a Crawl-delay, Myra in front, 200s that shrink under load, or a
-block that comes only late in a long session.
+listing, a Crawl-delay, Myra in front, 200s that shrink under load, a
+block that comes only late in a long session, a local link that goes down,
+or a sitemap behind a redirect. `NuxtSite` plays a Nuxt 3 shop whose
+categories outnumber its products, its API on another host behind Alibaba
+Cloud asking for a search word, an internal API host in its runtime config,
+routes in its JS bundles and products in its `__NUXT_DATA__`.
 
 The real `Recon` runs against it. Each safety rule was checked by breaking the
 code on purpose and watching a test fail. CI runs ruff, mypy and the tests on
@@ -302,7 +369,7 @@ add a platform, an anti-bot service or a language.
 - signatures of platforms, anti-bot services and search services as data
   files, so they can be added without touching code
 - `--render`: read the data of pages drawn by JavaScript through the browser
-- `--watch` deeper: follow a product list's paging call once, to show which
+- the watch deeper: follow a product list's paging call once, to show which
   parameter pages and how far
 - listing checks: page-size limits, stable sorting, catalogue size from
   several sources

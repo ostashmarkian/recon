@@ -3,13 +3,15 @@
 import gzip
 
 import pytest
-from fakes import BASE, PRODUCT, ld, page, sitemap_index, urlset
+from fakes import BASE, PRODUCT, NuxtSite, ld, page, sitemap_index, urlset
 
 from recon import settings
 from recon.clients import Answer
 from recon.pages import (
     HREF,
+    LISTING_PATH,
     PRODUCT_HINT,
+    PRODUCT_PATH,
     SITEMAP_HINT,
     by_family,
     drawn,
@@ -186,3 +188,38 @@ def test_freshness() -> None:
 def test_drawn_by_javascript() -> None:
     assert drawn(page('<body><div id="root"></div><script>x</script>'))["drawn"]
     assert not drawn(page("<body>" + "word " * 100 + "</body>"))["drawn"]
+
+
+def test_a_listing_is_told_from_a_product_page() -> None:
+    """A category page's JSON-LD lists 10 Products: its first is no product of the page's own."""
+    site = NuxtSite()
+    listing = product_data(page(site.listing_page("/category/usb/070403.html", 1)))
+    assert (listing["kind"], listing["kind_why"]) == ("listing", "a JSON-LD ItemList of 10 Products")
+    assert (listing["found"], listing["jsonld"], listing["jsonld_listed"]) == (False, {}, 10)
+    product = product_data(page(site.product_page(3)))
+    assert (product["kind"], product["found"], product["jsonld"].get("mpn")) == ("product", True, None)
+    assert product["state"]["product"]["fields"]["mpn"] == "MPN-3", "the state holds what the JSON-LD lacks"
+
+
+def test_other_signs_of_a_listing() -> None:
+    three = "".join(ld(f"M{n}", f"S{n}") for n in range(3))
+    assert product_data(page(three))["kind_why"] == "3 JSON-LD Products side by side"
+    titled = Answer(f"{BASE}/c/usb", 200, {}, (), b"<title>Page 2 of USB &amp; HDMI</title><p>x</p>")
+    assert product_data(titled)["kind_why"] == "a page number in its title"
+    paged = Answer(f"{BASE}/c/usb?page=3", 200, {}, (), b"<title>USB</title>")
+    assert product_data(paged)["kind_why"] == "a page number in its address"
+    for first in (f"{BASE}/c/usb?page=1", f"{BASE}/?p=12"):
+        assert product_data(Answer(first, 200, {}, (), b"<title>USB</title>"))["kind"] == "", first
+    related = ld("M1", "S1").replace(
+        '"sku": "S1"', '"sku": "S1", "isRelatedTo": [{"@type": "Product"}, {"@type": "Product"}]'
+    )
+    assert product_data(page(related))["kind"] == "product", "related products inside the product are none of its own"
+
+
+def test_product_and_listing_addresses() -> None:
+    for path in ("/products/usb/x/23120139.html", "/p/123/", "/dp/B0001/", "/item/77"):
+        assert PRODUCT_PATH.search(path + "/"), path
+    assert not PRODUCT_PATH.search("/category/usb-dvi-hdmi-accessories/070403.html")
+    for path in ("/category/usb/070403.html", "/en/brands/acme/12/", "/manufacturers/nidec/16918.html", "/c/1"):
+        assert LISTING_PATH.search(path), path
+    assert not LISTING_PATH.search("/catalog/diodes/1234") and not LISTING_PATH.search("/cart/")

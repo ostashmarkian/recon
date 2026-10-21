@@ -80,8 +80,17 @@ SITEMAP_URLS_PER_FILE = 1000  # addresses kept of one sitemap file, from all ove
 CRAWL_DELAY_MOST = 60.0  # s: robots.txt asking for more stops the run (unless --pause names a pace)
 
 
-# where a sitemap is looked for when robots.txt names none: BigCommerce keeps it at /xmlsitemap.php
-SITEMAP_PATHS = ("/sitemap.xml", "/sitemap_index.xml", "/xmlsitemap.php")
+# where a sitemap is looked for when robots.txt names none, in turn until one answers: BigCommerce keeps it at
+# /xmlsitemap.php, Astro and many sitemap modules at /sitemap-index.xml, WordPress (5.5 and later) at
+# /wp-sitemap.xml; some shops only gzip it. Redirects on the site are followed, REDIRECTS at most
+SITEMAP_PATHS = (
+    "/sitemap.xml",
+    "/sitemap_index.xml",
+    "/xmlsitemap.php",
+    "/sitemap-index.xml",
+    "/wp-sitemap.xml",
+    "/sitemap.xml.gz",
+)
 
 
 SAMPLE_URLS = 5000  # page addresses kept from the sitemaps
@@ -102,6 +111,35 @@ WATCH_CALLS = 60
 WATCH_BODY = 2_000_000
 WATCH_SENT = 20_000  # characters of a POST body kept, to ask it again
 REPLAY_MOST = 3  # product lists the pages fetch, asked once more with the plain client let in
+
+
+# The site's own API, read without a browser on every run. API_BASES_MOST of the API bases the pages' runtime
+# config names, each host looked up in DNS (DNS_WAIT s) and, when public, asked once: its robots.txt. Then the
+# JS bundles the pages load (their own, on the site or a CDN), BUNDLES_MOST files and BUNDLES_BYTES in all, each
+# read up to BUNDLE_BYTES, for the API routes they name (ROUTES_MOST kept)
+API_BASES_MOST = 8
+DNS_WAIT = 10.0
+BUNDLES_MOST = 30
+BUNDLE_BYTES = 5_000_000
+BUNDLES_BYTES = 40_000_000
+ROUTES_MOST = 300
+# requests of list and search routes without the browser, best first, until one gives a product list: each route
+# on the API bases in turn until one answers other than 404; and once more with a value an error message says
+# the call lacks (a part number for its keyword, a listing's category id), within the same count
+API_PROBES = 4
+LISTING_TRIES = 2  # pages asked for a listing the API step and the watch read, when no step met one
+
+
+# A page's own state (Nuxt's __NUXT_DATA__, Next.js's __NEXT_DATA__): STATE_VALUES values decoded at most,
+# STATE_DEPTH levels looked into for product lists and the product a page is about
+STATE_VALUES = 500_000
+STATE_DEPTH = 40
+
+
+# More product links read in the sample in place of pages that turn out to be listings; LISTINGS_KEPT listing
+# pages met on the way kept, for their state and their links
+SAMPLE_SKIPS = 5
+LISTINGS_KEPT = 3
 
 
 SESSION_PAGES = 12
@@ -146,6 +184,13 @@ RECOVER = 30
 LONG_MINUTES = 15.0
 LONG_PAUSE = (5.0, 10.0)
 LONG_MOST = 200
+
+
+# --long, at an answer lost: the site, or the local link? NEUTRAL_HOSTS are asked; when none of them answers
+# either, the link failed and the site is not judged: the session waits LINK_WAIT s at a time until one answers,
+# within its minutes, and goes on
+NEUTRAL_HOSTS = ("https://www.cloudflare.com/cdn-cgi/trace", "https://www.google.com/generate_204")
+LINK_WAIT = 30.0
 
 
 PRODUCT_TRIES = 2  # more product links read when the deeper page shows no product data

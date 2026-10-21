@@ -1,5 +1,90 @@
 # Changelog
 
+## Unreleased
+
+From a run on a Nuxt 3 shop behind Cloudflare whose data sits on an open JSON API on another host:
+
+- **A listing is not a product page.** The run had sampled ten category pages as products: each carries a JSON-LD
+  ItemList of ten Products, and recon read the first item as the page's own, then reported "mpn 0/10" and a false
+  trap. A page that lists products is now told apart: an ItemList of Products, three or more Products side by
+  side, a product list in its state with its counts beside it, a page number in its address or "Page 2 of" in
+  its title. A listing is passed by the product step, left out of the sample (more links are read in its
+  place, the products it links to first, and the rest of its family is skipped), and the not-found probe makes
+  up a product, not a category. Once the product page is known, a page of another family that holds no product
+  of its own (a maker's page) is left out of the sample too: on the shop it had kept the false trap alive.
+  Links with a product's own word (`/product/`, `/products/`, `/p/`, `/item/`, `/dp/`) are tried before those with
+  only a long number, and those under a listing's word (`/category/`, `/brands/`) last, so the deeper page is a
+  product.
+- **The API is looked for on every run, without a browser.** Before, only `--watch` looked, and a listing drawn
+  on the server showed no XHR at all. Now each run reads:
+  - the API bases the pages' runtime config names: Nuxt 3's `window.__NUXT__.config`, Nuxt 2's state,
+    Next.js's `__NEXT_DATA__`, and `apiHost`, `API_URL`, `baseURL` style keys in inline scripts;
+  - each API host in DNS. One with no public DNS, or a private address, is internal: named, and never asked.
+    A public one is asked once, for its robots.txt, and the report names its server, its cookies, its CNAME and
+    what stands in front of it, per host: an API host can sit behind another service than the site;
+  - the JS bundles the home page, the product page and a listing load, and the chunks they name (30 files at
+    most, 40 MB in all, each read up to 5 MB, paced as every request): the site's own only, on its host, on
+    another host of its domain, or on the CDN its runtime config names (Nuxt's `cdnURL`, Next's
+    `assetPrefix`), whose robots.txt is asked first, once. Another site's `/_nuxt/` is not read. A host is
+    looked up in DNS before anything is asked of it: one with no public DNS, a private address or a name like
+    `localhost` is named and never asked, not even its robots.txt. The API routes they name, with their
+    methods, grouped as lists and search, detail, stock and price; and a helper that adds parameters to the
+    calls, such as `addAntiSpiderParams`, with the parameters it sets, assigned or merged in
+    (`Object.assign(e,{v:t,p:n})`, a spread). A name that only holds the word, as an analytics library's
+    `checkIsAddSign`, is no helper;
+  - the pages' state: Nuxt 3's `__NUXT_DATA__` (devalue, its wrappers, Sets, Maps and Dates read), Next.js's
+    `__NEXT_DATA__` and `window.__INITIAL_STATE__`. The report gives each product list's key path, its size and
+    the counts beside it (`resultTotal`, `pageSize`), and the product a product page is about. The listing read
+    for it, and opened by the watch, is a page found to list products: one met on the way, else the product
+    page's category links, its own (the deepest) first, two asked at most. The top of a category tree, with a
+    few featured products and no counts, is not taken for one;
+  - list or search routes, asked by GET with the plain client let in, no cookie or token, four requests at
+    most, until one gives a product list: only routes the code calls by GET, with nothing to fill in, and none
+    whose words name a change of state or a visitor's own data (`add`, `delete`, `cart`, `wish`, `user` and
+    the like); those that name products first. They are asked on the site's own API base first (one on its
+    domain, then one an `apiHost`, `API_URL` or `baseURL` style key names; a payment service's
+    `paymentApiUrl` comes after), then on the other bases and the site itself until one answers other than
+    404. A JSON answer that says the call failed is reported as an error message, not as data; one that says
+    what it lacks (`Either cate_id or keyword is required`) is asked once more with a value the run has: the
+    product page's part number as its search word, else the last number of a category page's address as its
+    category id.
+
+  The verdict opens with it, after the way in: the API base, what is in front of its host, the internal hosts,
+  whether a plain client got a product list, data or an error message (with the value filled in, and what came
+  back without it), and the routes; then the page state. A
+  helper's parameters are said to be unneeded only when a product list came back without them. The section
+  "The site's own API, without a browser" holds the rest.
+- **The API's refusals are its own.** An API route's 401 (a key it wants) and a refusal by an API host or a
+  CDN are reported with the API and do not keep the burst off: the burst rests on the site's own pages.
+- **The watch runs by default** where patchright and Chrome are there; where they are not, the report says
+  which is missing and the run goes on. `--no-watch` turns it off; `--watch` is still accepted and does
+  nothing. A list the API step asked already is not asked again by the watch's replay, and an API host's own
+  robots.txt decides what is asked of it.
+- **A part number the page state holds counts.** The product data and the sample read the product in the
+  page's state too (a part-number key such as `mpn`, `partNumber`, `pro_sno`, `std_pro_sno`), so "a part number
+  in the page's words but not in its data" is no longer said of pages whose state holds it. The sample says how
+  many pages had a field from the state only. The state's stock is a stock's own count (`stock`, `stock_num`),
+  not a flag before it (`in_stock: 1`) or an order's step (`moq`, `mult`).
+- **JSON is read from the body, not its Content-Type:** an API serving JSON as `text/html` is read as JSON
+  (a BOM and an anti-XSSI prefix are skipped too), and the report says what type it came as.
+- **Sitemaps:** `/sitemap-index.xml`, `/wp-sitemap.xml` and `/sitemap.xml.gz` are guessed too. Redirects on the
+  site are followed (five at most, where robots.txt allows) and the chain is reported with its final status;
+  a redirect to another site is named and not followed. A guess that moved into a folder and is not there is
+  tried once more by its own name in that folder. Guesses not asked no longer count as files named. "Files read"
+  counts the files that answered; the addresses asked, guesses and redirects among them, are said beside it.
+- **`--long` tells the local link from the site.** At an answer lost, two neutral hosts are asked
+  (`NEUTRAL_HOSTS`: Cloudflare's trace and Google's 204). When neither answers, this machine's link failed,
+  not the site: the session waits 30 s at a time until one answers, within its minutes, and goes on; the
+  report names the outage instead of "answers lost". A link that stays down cuts the session short, and the
+  level says it is inconclusive.
+- **Alibaba Cloud** is recognised: its WAF by the cookies `acw_tc`, `acw_sc__v2` and `cdn_sec_tc`, its
+  `acw_sc__v2` JavaScript challenge (a challenge) and its 405 block page (blocked); its CDN by `EagleId`,
+  `Via: ens-cache`, `Ali-Swift-*` headers, `Server: Tengine` beside them, and a `*.kunlun*.com` CNAME. The WAF
+  counts as a guard, so no burst runs behind it: its cookies mean a security layer that bans an IP by its rate
+  (CC protection) and serves the challenge. The CDN alone is no guard, as CloudFront and Fastly are not;
+  `Server: Tengine` alone is any nginx fork's and names nothing.
+- 275 tests.
+
 ## 1.2.0 - 2026-10-19
 
 - **A new scale.** The top of the old one, "nothing let in, not even a browser",

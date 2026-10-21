@@ -4,7 +4,21 @@ import asyncio
 import json
 
 import pytest
-from fakes import BASE, CHALLENGE, LISTED, FakeBrowser, FakeClient, FakeSite, FakeWatcher, scan
+from fakes import (
+    API,
+    API_DNS,
+    BASE,
+    CDN,
+    CHALLENGE,
+    INTERNAL,
+    LISTED,
+    FakeBrowser,
+    FakeClient,
+    FakeSite,
+    FakeWatcher,
+    NuxtSite,
+    scan,
+)
 
 from recon import settings
 from recon.clients import Answer
@@ -181,6 +195,43 @@ class TestLongSession:
         f, text, _ = scan(FakeSite(), burst=False)
         assert "long" not in f and "Long session" not in text
 
+    def test_the_local_link_failing_is_not_the_site(self, monkeypatch):
+        """At request 15 this machine's link goes down for 4 requests: the site and both neutral hosts silent,
+        then the first neutral host once more; the second answers, and the session goes on to its cap."""
+        monkeypatch.setattr(settings, "LONG_PAUSE", (0, 0))
+        monkeypatch.setattr(settings, "LINK_WAIT", 0)
+        monkeypatch.setattr(settings, "LONG_MOST", 30)
+        site = FakeSite(link_down=(15, 4))
+        f, text, _ = scan(site, long=1.0, burst=False)
+        long = f["long"]
+        assert (long["lost"], long["refused"], long["cut"], long["asked"]) == (None, None, False, 30)
+        [outage] = long["link"]
+        assert (outage["at"], outage["back"], outage["why"]) == (15, True, "ReadError")
+        assert [p for _, _, p in site.asked if p in settings.NEUTRAL_HOSTS] == [*settings.NEUTRAL_HOSTS] * 2
+        assert "this machine's link failed at request 15" in text and "not the site" in text
+        assert "A long session of 0.0 min (30 requests) was not refused." in f["level"]["said"]
+
+    def test_a_link_that_stays_down_leaves_the_site_unjudged(self, monkeypatch):
+        monkeypatch.setattr(settings, "LONG_PAUSE", (0, 0))
+        monkeypatch.setattr(settings, "LINK_WAIT", 0.05)
+        site = FakeSite(link_down=(15, 100_000))  # past the session test's 13 requests with a jar
+        f, text, _ = scan(site, long=0.02, burst=False)
+        long = f["long"]
+        assert (long["cut"], long["lost"], long["refused"], long["asked"]) == (True, None, None, 15)
+        assert long["link"][0]["at"] == 15 and not long["link"][0]["back"]
+        assert "- **Long session:** cut short at request 15" in text and "the site is not judged past it" in text
+        assert "by this machine's link, not the site: inconclusive." in f["level"]["said"]
+        assert "answers lost" not in text
+
+    def test_the_site_dropping_while_the_link_works_is_the_site(self, monkeypatch):
+        monkeypatch.setattr(settings, "LONG_PAUSE", (0, 0))
+        site = FakeSite(drop_after=12)
+        f, text, _ = scan(site, long=1.0, burst=False)
+        long = f["long"]
+        assert long["lost"]["verdict"] == "dropped" and long["link"] == [] and not long["cut"]
+        assert "- **Long session:** answers lost at request" in text
+        assert [p for _, _, p in site.asked].count(settings.NEUTRAL_HOSTS[0]) == settings.LOST_MAX, "asked at each loss"
+
 
 def test_user_agent_filter_is_not_protection():
     f, text, _ = scan(FakeSite(refuse_uas=("GPTBot", "ClaudeBot")))
@@ -353,6 +404,38 @@ def test_a_refused_sitemap_keeps_the_burst_off_but_is_no_rate_limit():
     assert (f["level"]["level"], f["level"]["label"]) == (0, "none seen")
     assert "Refused one at a time in sitemaps (1 refused)." in f["level"]["said"]
     assert "rate limit" not in text
+
+
+def test_the_apis_own_refusals_leave_the_burst_on():
+    """A 401 of an API route is its key, and a 403 of an API host is that host's: neither is the site's, whose
+    own pages let every client in, so its burst runs."""
+
+    class Keyed(FakeSite):
+        def answer(self, client, url, headers):
+            if url.startswith("https://api.other.test"):
+                return Answer(url, 403, {"server": "nginx"}, (), b"<title>403 Forbidden</title>", 0.01)
+            if url.startswith(f"{BASE}/api/catalog/products"):
+                return Answer(url, 401, {"server": "nginx"}, (), b'{"error": "no key"}', 0.01)
+            return super().answer(client, url, headers)
+
+    extra = '<script>window.cfg={apiHost:"https://api.other.test"}</script>'
+    site = Keyed(home_extra=extra, dns={"api.other.test": {"addresses": ["8.8.4.4"]}})
+    f, _, _ = scan(site)
+    probe = f["api"]["probe"]
+    assert (probe["url"], probe["status"]) == (f"{BASE}/api/catalog/products?limit=24", 401)
+    assert f["api"]["bases"][0]["robots"] == "unreadable", "the API host refused its robots.txt: nothing asked of it"
+    assert f["refused_elsewhere"] == {} and f["level"]["level"] == 0
+    assert f["burst"]["steps"], "the burst ran"
+
+
+def test_a_route_not_on_the_api_host_is_asked_on_the_site():
+    """The API host named answers 404 for the route the page calls: the site itself is asked next."""
+    extra = '<script>window.cfg={apiHost:"https://api2.shop.test"}</script>'
+    site = FakeSite(home_extra=extra, dns={"api2.shop.test": {"addresses": ["8.8.4.4"]}})
+    f, _, _ = scan(site, burst=False)
+    probe = f["api"]["probe"]
+    assert (probe["url"], probe["kind"]) == (f"{BASE}/api/catalog/products?limit=24", "products")
+    assert [x["url"] for x in probe["others"]] == ["https://api2.shop.test/api/catalog/products?limit=24"]
 
 
 def test_a_deeper_page_answering_400_turns_no_client_away():
@@ -533,16 +616,309 @@ class TestWatch:
         _, text, _ = scan(FakeSite(), burst=False, watch=True, watcher=FakeWatcher(fail=True))
         assert "Chrome could not run (RuntimeError: Chrome is not installed)" in text
 
-    def test_not_without_the_flag(self):
+    def test_on_by_default_and_off_with_no_watch(self):
         watcher = FakeWatcher()
         f, _, _ = scan(FakeSite(), burst=False, watcher=watcher)
-        assert ("watch" not in f, watcher.urls) == (True, [])
+        assert watcher.urls and f["watch"]["pages"], "watched without being asked to"
+        watcher = FakeWatcher()
+        f, text, _ = scan(FakeSite(), burst=False, watch=False, watcher=watcher)
+        assert (f["watch"], watcher.urls) == ({"skipped": "--no-watch"}, [])
+        assert "- **What the pages fetch:** not watched (--no-watch)" in text
+
+    def test_chrome_not_there_is_a_note_not_an_error(self):
+        f, text, _ = scan(FakeSite(), burst=False)  # scan()'s watcher: no Chrome on this machine
+        assert f["watch"] == {"skipped": "Google Chrome is not installed"}
+        assert "errors" not in f
+        assert "- **What the pages fetch:** not watched (Google Chrome is not installed)" in text
+
+    def test_a_list_the_api_step_asked_is_not_asked_again(self):
+        """The home page's script names /api/catalog/products: asked once as a route found, and the watch's call
+        to the same address takes that answer."""
+        site = FakeSite()
+        f, _, _ = scan(site, burst=False, watcher=FakeWatcher())
+        probe = f["api"]["probe"]
+        assert (probe["url"], probe["kind"], probe["items"]) == (
+            f"{BASE}/api/catalog/products?limit=24",
+            "products",
+            24,
+        )
+        assert [p for _, _, p in site.asked].count("/api/catalog/products?limit=24") == 1
+        replay = f["watch"]["pages"][0]["calls"][0]["replay"]
+        assert (replay["works"], replay["items"]) == (True, 24)
+
+
+@pytest.fixture(scope="module")
+def run() -> tuple[dict, str, NuxtSite]:
+    """One run against the Nuxt shop, shared by TestNuxtShop."""
+    site = NuxtSite()
+    f, text, _ = scan(site)
+    return f, text, site
+
+
+class TestNuxtShop:
+    """A Nuxt 3 shop: Cloudflare in front, its data on an open API on another host."""
+
+    def test_the_deeper_page_is_a_product_not_a_category(self, run):
+        """30 category links with a long number outnumber the 8 product links: the products come first."""
+        f, *_ = run
+        assert f["page"].startswith(f"{BASE}/products/") and f["page_from"] == "a product link"
+        assert (f["product"]["url"], f["product"]["kind"]) == (f["page"], "product")
+
+    def test_the_sample_reads_products_a_listing_names(self, run):
+        """8 product links on the home page, the rest from the listing met on the way: 10 product pages."""
+        f, text, _ = run
+        sample = f["sample"]
+        assert (sample["read"], sample["listings"], sample["not_products"]) == (10, [], [])
+        assert all("/products/" in r["url"] for r in sample["rows"])
+        odd = sum(int(r["url"].split("/mpn-")[1].split("/")[0]) % 2 for r in sample["rows"])
+        assert sample["coverage"]["mpn"] == 10 and sample["from_state"] == {"mpn": odd}, "odd pages: in the state only"
+        assert sample["traps"] == [], "no 'a part number in the words but not in the data'"
+        assert f"**Product sample:** 10 of 10 pages read; mpn 10/10 ({odd} from the page state)" in text
+
+    def test_a_listing_met_in_the_sample_gives_its_products_next(self):
+        """No listing met before the sample (the home page's /category is a tree): the first category read in it
+        is left out, and its products are read in its place."""
+        f, _, _ = scan(NuxtSite(tree=True), burst=False)
+        sample = f["sample"]
+        assert [r["probe"] for r in f["not_found"]["rows"]] == ["a made-up product", "a made-up path"]
+        [listing] = sample["listings"]
+        assert listing["url"].startswith(f"{BASE}/category/cat-")
+        assert sample["read"] == 10 and all("/products/" in r["url"] for r in sample["rows"])
+        assert any(int(r["url"].split("/mpn-")[1].split("/")[0]) >= 10 for r in sample["rows"]), "the listing's"
+
+    def test_listings_and_a_makers_page_are_left_out_of_the_sample(self):
+        """Past the products: a brand's listing and a maker's page with words for a part number and no product."""
+        f, text, _ = scan(NuxtSite(), burst=False, products=20)
+        sample = f["sample"]
+        [listing], [maker] = sample["listings"], sample["not_products"]
+        assert listing["url"].startswith(f"{BASE}/brands/") and listing["why"] == "a JSON-LD ItemList of 10 Products"
+        assert maker == {
+            "url": f"{BASE}/manufacturers/maker-0/16910.html",
+            "why": "no product of its own, another kind of address",
+        }, "the second maker's page is not asked: its family is passed"
+        assert (sample["read"], sample["asked"], sample["traps"]) == (18, 20, [])
+        assert "18 of 20 pages read (1 listing and 1 page with no product of its own left out)" in text
+
+    def test_the_not_found_probe_makes_up_a_product(self, run):
+        f, *_ = run
+        made_up = f["not_found"]["rows"][0]
+        assert made_up["url"].startswith(f"{BASE}/products/usb-accessories/") and made_up["url"].endswith(
+            "/99999999.html"
+        )
+
+    def test_the_api_hosts(self, run):
+        f, _, site = run
+        public, internal = f["api"]["bases"]
+        assert (public["url"], public["keys"], public["source"]) == (
+            API,
+            ["apiHost", "API_HOST"],
+            "the Nuxt runtime config",
+        )
+        assert (public["dns"], public["canonical"]) == ("public", "api.shop.test.w.kunlungr.com")
+        assert public["vendors"] == {
+            "Alibaba Cloud WAF": ["cookie acw_tc", "cookie cdn_sec_tc"],
+            "Alibaba Cloud (CDN)": ["server: Tengine", "CNAME api.shop.test.w.kunlungr.com"],
+        }
+        assert (internal["url"], internal["dns"]) == (INTERNAL, "none")
+        assert site.resolved == ["api.shop.test", "api-noauth.backend.test"]
+        assert not [p for _, _, p in site.asked if "api-noauth" in p], "an internal host is never asked"
+        assert "Alibaba Cloud WAF" not in f["vendors"], "the API host's front is not the site's"
+        assert f["level"]["level"] == 4, "the site's own: Cloudflare's __cf_bm"
+
+    def test_routes_and_a_helper_in_the_bundles(self, run):
+        f, *_ = run
+        api = f["api"]
+        routes = {r["route"]: (r["method"], r["kind"]) for r in api["routes"]}
+        assert routes == {
+            "/www-api/search/cate-search/get-search-result-v2": ("GET", "lists and search"),
+            "/www-api/goods/spu-detail": ("GET", "detail"),
+            "/www-api/goods/stock-info": ("POST", "stock and price"),
+            "/www-api/cart/add": ("POST", "other"),
+            "/catalog-api/nav-cate/get-cate-list": ("GET", "lists and search"),
+            "/www-api/search/hot-words": ("GET", "lists and search"),
+            "/api/_nuxt_icon/icons.json": ("GET", "other"),
+        }, "a menu's link (/about/us) is no route"
+        assert api["helpers"] == [{"name": "addAntiSpiderParams", "sets": ["v", "v_", "p"], "in": "Bx1api.js"}]
+        assert api["bundles"]["read"] == 4, "the two the pages load, and the two chunks they name"
+
+    def test_a_plain_client_gets_json_served_as_html(self, run):
+        """The search answers a 200 with a message asking for a category or a search word: asked once more with
+        the product page's part number, it gives its list."""
+        f, _, site = run
+        probe = f["api"]["probe"]
+        route = f"{API}/www-api/search/cate-search/get-search-result-v2"
+        held = f["product"]["jsonld"].get("mpn") or f["product"]["state"]["product"]["fields"]["mpn"]
+        assert (probe["url"], probe["filled"]) == (f"{route}?keyword={held}", {"keyword": held})
+        assert (probe["json"], probe["json_as"], probe["kind"], probe["path"], probe["items"]) == (
+            True,
+            "text/html",
+            "products",
+            "result.pageOfItems",
+            25,
+        )
+        [bare] = probe["others"]
+        assert (bare["url"], bare["error"], bare["message"]) == (route, True, "Either cate_id or keyword is required.")
+        asked = [p for _, _, p in site.asked]
+        assert asked.count(route) == 1 and asked.count(probe["url"]) == 1
+        assert not [p for p in asked if "cart/add" in p or "stock-info" in p], "a POST route is never asked"
+        assert f["refused_elsewhere"] == {}
+
+    def test_an_error_message_is_said_to_be_one(self):
+        """The search asks for a token recon has not: no value is filled in, and the verdict says it got an error
+        message, not data; nor does it say the API answered without the helper's parameters."""
+        f, text, _ = scan(NuxtSite(token=True), burst=False, products=0)
+        probe = f["api"]["probe"]
+        assert (probe["error"], probe["message"], probe.get("filled")) == (True, "token is required", None)
+        assert "a plain client got JSON from a list route (an error message, not data: token is required)" in text
+        assert "answered without them" not in text
+        assert len(probe["others"]) == 2, "the other list routes, on the API host that answered"
+
+    def test_a_part_number_searched_to_its_one_product(self):
+        """The search gives the part number's one product: data, not a list, and the verdict says with what it
+        was asked and what it said without it."""
+        f, text, _ = scan(NuxtSite(exact=True), burst=False, products=0)
+        probe = f["api"]["probe"]
+        held = f["product"]["jsonld"].get("mpn") or f["product"]["state"]["product"]["fields"]["mpn"]
+        assert (probe["kind"], probe["error"], probe["filled"]) == ("data", False, {"keyword": held})
+        assert (
+            f"a plain client got JSON from a list route (data, no product list, with keyword={held}; without it, an"
+            " error message: Either cate_id or keyword is required.)" in text
+        )
+        assert "answered without them" not in text
+
+    def test_the_page_state(self, run):
+        f, *_ = run
+        states = {s["page"]: s for s in f["api"]["state"]}
+        listed = states["listing"]["lists"][0]
+        assert listed["path"] == 'data["third-cate-/category/cat-0/070400.html"].pageOfItems'
+        assert (listed["items"], listed["counts"], listed["mpn_key"]) == (
+            25,
+            {"resultTotal": 413, "pageSize": 25},
+            "pro_sno",
+        )
+        held = states["product"]["product"]
+        assert held["path"].endswith(".goodsDetail") and held["mpn_key"] == "pro_sno"
+
+    def test_the_verdict(self, run):
+        f, text, _ = run
+        held = f["api"]["probe"]["filled"]["keyword"]
+        assert (
+            f"- **API:** `{API}` (Alibaba Cloud WAF, Alibaba Cloud (CDN) in front, not what the site has: its"
+            " protection is its own); 1 internal, never asked; a plain client got JSON from a list route (a product"
+            f" list of 25, with keyword={held}; without it, an error message: Either cate_id or keyword is required.)"
+            in text
+        )
+        assert f"`keyword` filled in with {held}, which the run had" in text
+        assert f"  - `{INTERNAL}`: `serverApiHost`, `SERVER_API_HOST` in the Nuxt runtime config; no public DNS" in text
+        assert "`addAntiSpiderParams` (it sets v, v_, p), in Bx1api.js; the API answered without them" in text
+        assert "- **Page state:** Nuxt 3 __NUXT_DATA__: the listing page's" in text
+        assert "redirected: /sitemap-index.xml 301 -> /nuxt-sitemaps/sitemap-prod-index.xml 404" in text
+        assert "## The site's own API, without a browser" in text
+
+    def test_bundles_a_cdn_serves_are_read(self):
+        """Nuxt's cdnURL: the bundles under /_nuxt/ on a static host; its robots.txt asked first, once."""
+        site = NuxtSite(cdn=True)
+        f, _, _ = scan(site, burst=False, products=0)
+        bundles = f["api"]["bundles"]
+        assert (bundles["read"], bundles["hosts"]) == (4, {"static.shop.test": "not there"})
+        assert next(p for _, _, p in site.asked if p.startswith(CDN)) == f"{CDN}/robots.txt"
+        assert [p for _, _, p in site.asked].count(f"{CDN}/robots.txt") == 1
+        assert len(f["api"]["routes"]) == 7
+        assert "static.shop.test" not in json.dumps(f["vendors"]), "another host's answers are not the site's"
+
+    def test_bundles_on_internal_hosts_are_never_asked(self):
+        """Scripts on localhost, a private address and the servers' own API host, each named a CDN by a runtime
+        config, and one on a host of the site's domain that resolves to a private address: neither the file nor
+        the host's robots.txt is asked. Another site's /_nuxt/ is not the shop's: not asked either."""
+        head = (
+            '<script src="http://localhost:3000/_nuxt/a.js"></script><script src="http://10.1.2.3/_nuxt/b.js">'
+            f'</script><script src="{INTERNAL}/_nuxt/c.js"></script>'
+            '<script src="https://assets.shop.test/_nuxt/d.js"></script>'
+            '<script src="https://cdn.other.test/_nuxt/e.js"></script>'
+            '<script>window.a={cdnURL:"http://localhost:3000"};window.b={cdnURL:"http://10.1.2.3"};'
+            f'window.c={{cdnURL:"{INTERNAL}"}}</script>'
+        )
+        dns = {**API_DNS, "assets.shop.test": {"addresses": ["10.0.0.9"]}, "cdn.other.test": {"addresses": ["8.8.8.8"]}}
+        site = NuxtSite(head=head, dns=dns)
+        f, text, _ = scan(site, burst=False, products=0)
+        bundles = f["api"]["bundles"]
+        assert set(bundles["internal"]) == {"localhost", "10.1.2.3", "api-noauth.backend.test", "assets.shop.test"}
+        hosts = ("localhost", "10.1.2.3", "api-noauth", "assets.shop.test", "other.test")
+        assert not [p for _, _, p in site.asked if any(h in p for h in hosts)], "no robots.txt, no file"
+        assert "localhost" not in site.resolved and "10.1.2.3" not in site.resolved, "internal by its name alone"
+        assert site.resolved.count("api-noauth.backend.test") == 1, "looked up once, as an API base and a CDN"
+        assert "cdn.other.test" not in site.resolved
+        assert bundles["read"] == 4 and "on internal hosts not asked (" in text
+
+    def test_routes_are_asked_on_the_shops_own_api_first(self):
+        """A payment service's paymentApiUrl named before the shop's apiHost, and its /_nuxt/ script: its
+        robots.txt is asked, as every public API host's is, and nothing more of it."""
+        head = (
+            '<script>window.pay={paymentApiUrl:"https://pay.vendor.test"}</script>'
+            '<script src="https://pay.vendor.test/_nuxt/pay.js"></script>'
+        )
+        site = NuxtSite(head=head, dns={**API_DNS, "pay.vendor.test": {"addresses": ["8.8.4.4"]}})
+        f, _, _ = scan(site, burst=False, products=0)
+        assert [b["url"] for b in f["api"]["bases"]] == ["https://pay.vendor.test", API, INTERNAL]
+        assert f["api"]["probe"]["url"].startswith(f"{API}/www-api/search/")
+        assert [p for _, _, p in site.asked if "pay.vendor.test" in p] == ["https://pay.vendor.test/robots.txt"]
+
+    def test_the_listing_read_is_one_that_lists(self):
+        """No listing met before the API step: of the product page's category links, its own category (the
+        deepest) is read and found to list products, not the top of the tree; the watch opens it too."""
+        site, watcher = NuxtSite(tree=True), FakeWatcher()
+        f, _, _ = scan(site, burst=False, products=0, watcher=watcher)
+        listing = next(s for s in f["api"]["state"] if s["page"] == "listing")
+        assert listing["url"] == f"{BASE}/category/usb-accessories/070403.html"
+        assert listing["lists"][0]["counts"] == {"resultTotal": 413, "pageSize": 25}
+        assert watcher.urls[2] == listing["url"]
+        assert "/category/usb.html" not in [p for _, _, p in site.asked]
+
+    def test_bundles_robots_txt_keeps_out_are_not_read(self):
+        site = NuxtSite(disallow="/_nuxt/")
+        f, _, _ = scan(site, burst=False, products=0)
+        assert (f["api"]["bundles"]["read"], f["api"]["bundles"]["disallowed"]) == (0, 2)
+        assert not [p for _, _, p in site.asked if p.startswith("/_nuxt/")]
+
+
+def test_a_sitemap_behind_a_redirect_is_followed_and_named():
+    """/sitemap-index.xml redirects into a folder, to a file not there; the same name in that folder is the index."""
+    site = FakeSite(sitemap_moved=True)
+    f, text, _ = scan(site, burst=False)
+    moved = next(x for x in f["sitemap"]["files"] if x["url"] == f"{BASE}/sitemap-index.xml")
+    assert moved["chain"] == [
+        {"url": f"{BASE}/sitemap-index.xml", "status": 301},
+        {"url": f"{BASE}/maps/sitemap-prod-index.xml", "status": 404},
+    ]
+    assert (f["sitemap"]["addresses"], f["sitemap"]["files_read"], f["sitemap"]["asked"]) == (40, 3, 8)
+    assert [p for _, _, p in site.asked if "sitemap" in p][3:6] == [
+        "/sitemap-index.xml",
+        "/maps/sitemap-prod-index.xml",
+        "/maps/sitemap-index.xml",
+    ]
+    assert "redirected: /sitemap-index.xml 301 -> /maps/sitemap-prod-index.xml 404" in text
+    assert f["sitemap"]["files_left"] == 0, "the guesses not asked are no files named"
+
+
+def test_a_sitemap_redirect_to_another_site_is_named_not_followed():
+    class Away(FakeSite):
+        def answer(self, client, url, headers):
+            if url == f"{BASE}/sitemap.xml":
+                return Answer(url, 301, {"location": "https://cdn.other.test/sitemap.xml"}, (), b"", 0.01)
+            return super().answer(client, url, headers)
+
+    site = Away()
+    f, _, _ = scan(site, burst=False)
+    [moved] = f["sitemap"]["files"]
+    assert moved["chain"][-1] == {"url": "https://cdn.other.test/sitemap.xml", "status": None, "why": "another site"}
+    assert not [p for _, _, p in site.asked if "other.test" in p]
 
 
 def test_sitemap_guessed_when_robots_names_none():
     site = FakeSite(sitemap_at="/xmlsitemap.php")
-    f, _, _ = scan(site, burst=False)
-    assert (f["sitemap"]["addresses"], f["sitemap"]["files_read"]) == (40, 5)
+    f, text, _ = scan(site, burst=False)
+    assert (f["sitemap"]["addresses"], f["sitemap"]["files_read"], f["sitemap"]["asked"]) == (40, 3, 5)
+    assert "40 addresses in 3 files read (5 addresses asked, guesses and redirects among them)" in text
     assert [p for _, _, p in site.asked if "sitemap" in p][:3] == [
         "/sitemap.xml",
         "/sitemap_index.xml",

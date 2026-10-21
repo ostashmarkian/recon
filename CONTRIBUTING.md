@@ -29,6 +29,9 @@ guards is broken: break the code on purpose once and watch the test fail.
   it to `api_request()` and `api_says()`.
 - **An anti-bot service:** its refusal in `judge()`, its headers or cookies in
   `vendors_of()` (`classify.py`), and its name in `GUARDS` if it can shut an IP out.
+  The CNAME its hosts point to goes in `CNAMES`.
+- **A framework's page state or API config:** its state script in `states_of()`
+  (`state.py`); a config key naming an API in `BASE_KEY` (`api.py`).
 - **A search service:** a line in `SEARCH_SERVICES` (`pages.py`).
 - **A language:** words for a part number, maker, VAT or stock in `LABELS`
   (`pages.py`); quantity-discount words in `LADDER_WORDS` (`sample.py`).

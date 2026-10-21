@@ -1,5 +1,5 @@
-"""Reading pages: sitemaps, a product page's structured data and words,
-made-up addresses, listings, catalogue sources, freshness."""
+"""Reading pages: sitemaps, a product page's structured data and words, whether a page is a product or a
+listing, made-up addresses, listings, catalogue sources, freshness."""
 
 import contextlib
 import html as entities
@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from . import settings
 from .clients import Answer
+from .state import read_state, short
 
 # Pages a look-over must not ask for: they hold an account or change the site's state. Matched against the path
 # and the query, since a cart action is often a query (?add-to-cart=12, ?controller=cart, ?route=checkout/cart).
@@ -90,6 +91,26 @@ PRODUCT_HINT = re.compile(
     r"|[-_/]p-?\d+|product_id=|/\d{5,}(?:[-/.]|$)",
     re.I,
 )
+
+
+# A product's address by a path segment that says so: /product/, /products/, /p/, /item/, /dp/. Links like these are
+# tried before those with only a long number (/category/usb/070403.html has one too)
+PRODUCT_PATH = re.compile(
+    r"/(?:product|products|produkt|produkty|producto|prodotto|produit|item|items|goods|p|dp)/", re.I
+)
+
+
+# A listing's address by its first segment: a category, a collection, a brand's or maker's page, a search. Only an
+# order: such links are tried last, since a shop can keep its products under /catalog/ or /c/ as well
+LISTING_PATH = re.compile(
+    r"^/(?:[a-z]{2}(?:[-_][a-z]{2})?/)?(?:category|categories|cat|c|collections?|brands?|manufacturers?|makers?"
+    r"|search|tags?|kategorie|kategoria|categoria|categorie|kategorii)(?:[/.]|$)",
+    re.I,
+)
+
+
+# a listing's title: "Page 2 of Resistors"
+PAGE_OF = re.compile(r"\bpage\s+\d+\s+of\b", re.I)
 
 
 # links a visitor follows: <a href>, not <link> (stylesheets, the WordPress shortlink ?p=123, canonicals)
@@ -253,32 +274,38 @@ def read_sitemap(body: bytes) -> tuple[str, list[str], list[str]]:
     return ("index" if "<sitemapindex" in text[:2000] else "urls"), locs, LASTMOD.findall(text)
 
 
-def short(value: Any, most: int = 60) -> str | None:
-    return None if value in (None, "") else " ".join(str(value).split())[:most]
-
-
 LD_DEPTH = 64  # levels of JSON-LD nesting read; a page nested deeper is not a product page
 
 
-def ld_products(html: str) -> list[dict[str, Any]]:
-    """The schema.org Products of a page's JSON-LD blocks, @graph and nesting opened."""
-    found = []
+def ld_products(html: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The schema.org Products of a page's JSON-LD blocks, @graph and nesting opened: (those standing on their own,
+    those listed in an ItemList). A Product inside another one (a variant, a related product) is neither."""
+    found: list[dict[str, Any]] = []
+    listed: list[dict[str, Any]] = []
 
     def walk(root: Any) -> None:
-        """Every dict in `root`, in order, by a stack: no recursion, LD_DEPTH levels at most."""
-        stack = [(root, 0)]
+        """Every dict in `root`, in order, by a stack: no recursion, LD_DEPTH levels at most. `inside` is "list"
+        under an ItemList and "product" under a Product."""
+        stack: list[tuple[Any, int, str]] = [(root, 0, "")]
         while stack:
-            node, depth = stack.pop()
+            node, depth, inside = stack.pop()
             if depth > LD_DEPTH:
                 continue
             if isinstance(node, list):
-                stack.extend((item, depth + 1) for item in reversed(node))
+                stack.extend((item, depth + 1, inside) for item in reversed(node))
             elif isinstance(node, dict):
                 kinds = node.get("@type")
                 kinds = kinds if isinstance(kinds, list) else [kinds]
+                below = inside
                 if any(isinstance(k, str) and (k.endswith("Product") or k == "ProductGroup") for k in kinds):
-                    found.append(node)
-                stack.extend((v, depth + 1) for v in reversed(list(node.values())) if isinstance(v, (list, dict)))
+                    if inside != "product":
+                        (listed if inside == "list" else found).append(node)
+                    below = "product"
+                elif "ItemList" in kinds and inside != "product":
+                    below = "list"
+                stack.extend(
+                    (v, depth + 1, below) for v in reversed(list(node.values())) if isinstance(v, (list, dict))
+                )
 
     scripts = blocks(html, ("script",))
     lds = [
@@ -294,7 +321,7 @@ def ld_products(html: str) -> list[dict[str, Any]]:
                 walk(json.loads(re.sub(r"[\x00-\x1f]+", " ", block)))
             except (ValueError, RecursionError):  # nesting deeper than json can read
                 continue
-    return found
+    return found, listed
 
 
 def product_fields(p: dict[str, Any]) -> dict[str, Any]:
@@ -324,11 +351,43 @@ def product_fields(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+LISTED_MOST = 3  # JSON-LD Products standing side by side on a page: as many, and it lists them
+
+
+def page_kind(
+    a: Answer, products: list[dict[str, Any]], listed: list[dict[str, Any]], state: dict[str, Any] | None
+) -> tuple[str, str]:
+    """("product" | "listing" | "", why). A product page is about one product: a JSON-LD Product of its own, or a
+    product in its state. A listing lists them: an ItemList of Products, several Products side by side, a product
+    list in its state with its counts beside it, a page number in its address or "Page 2 of" in its title."""
+    if len(products) >= LISTED_MOST:
+        return "listing", f"{len(products)} JSON-LD Products side by side"
+    if products:
+        return "product", "a JSON-LD Product"
+    if state and state.get("product"):
+        return "product", f"a product in its state at `{state['product']['path']}`"
+    if len(listed) >= 2:
+        return "listing", f"a JSON-LD ItemList of {len(listed)} Products"
+    counted = [x for x in (state or {}).get("lists") or [] if x["counts"]]
+    if counted:
+        return "listing", f"a list of {counted[0]['items']} products in its state at `{counted[0]['path']}`"
+    title = TITLE.search(a.head)
+    paged = PAGE_LINK.search(a.url)  # page 2 or more; ?p= left out, as WordPress names a post so
+    if paged and (paged.group(1) or "").lower()[1:] != "p=" and int(paged.group(2) or paged.group(4)) >= 2:
+        return "listing", "a page number in its address"
+    if title and PAGE_OF.search(entities.unescape(title.group(1))):
+        return "listing", "a page number in its title"
+    return "", ""
+
+
 def product_data(a: Answer) -> dict[str, Any]:
     """What a product page carries: JSON-LD, from the whole page (big pages carry it at their end, and
-    its scan is linear); microdata, product meta tags and labels in its words, from its first HEAD bytes."""
+    its scan is linear); its state (Nuxt's, Next.js's); microdata, product meta tags and labels in its words,
+    from its first HEAD bytes. And whether it is a product page at all, or a listing."""
     html = a.head
-    products = ld_products(a.text)
+    products, listed = ld_products(a.text)
+    state = read_state(a.text)
+    kind, why = page_kind(a, products, listed, state)
     jsonld = {k: v for k, v in product_fields(products[0]).items() if v not in (None, "")} if products else {}
     microdata = {}
     for found in ITEMPROP.finditer(html):
@@ -353,14 +412,20 @@ def product_data(a: Answer) -> dict[str, Any]:
         seen = [words[m.start() : m.end() + 50] for m in pattern.finditer(words)]
         if seen:
             labels[name] = list(dict.fromkeys(seen))[:3]
-    has_data = bool(jsonld or microdata or meta.get("og:type") == "product" or "part number" in labels)
+    held = (state or {}).get("product")
+    has_data = bool(jsonld or microdata or meta.get("og:type") == "product" or "part number" in labels or held)
     return {
-        "found": has_data,
+        "found": has_data and kind != "listing",
+        "kind": kind,
+        "kind_why": why,
         "jsonld": jsonld,
         "jsonld_products": len(products),
+        "jsonld_listed": len(listed),
         "microdata": microdata,
         "meta": meta,
         "labels": labels,
+        # what the page's state holds: its format, the product it is about, its product lists
+        "state": {"format": state["format"], "product": held, "lists": state["lists"][:3]} if state else None,
     }
 
 

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 from .clients import cookie_names
 from .pages import HREF, PRODUCT_HINT
+from .state import product_like, signals_of
 
 # what every browser sends: a call that carries more needs it, a token, a key or a marker
 STANDARD = {
@@ -32,14 +33,6 @@ STANDARD = {
 # sent again when a call is asked once more without the browser: none of them is a secret
 REPLAYED = ("accept", "content-type", "x-requested-with")
 
-# the keys of a list's items that make it a catalogue, snake_case or camelCase: id, variant_id, VariantId, sku
-IDS = re.compile(
-    r"^(?:id|sku|mpn|code|handle|slug|ean|upc|gtin\d*)$|_(?:id|key|code|sku)$|sku|mpn|gtin|part_?n(?:o|umber)", re.I
-)
-CAMEL_IDS = re.compile(r"[a-z](?:Id|ID|Key|Code|Sku)$")
-NAMES = re.compile(r"name|title|^label$", re.I)
-PRICES = re.compile(r"price|amount|cost", re.I)
-STOCKS = re.compile(r"stock|qty|quantity|inventory|availab", re.I)
 # the keys that page through a list, near the top of the answer
 PAGING = re.compile(
     r"^(?:total|total_?(?:count|items|results|pages)|count|nb_?(?:hits|pages)|pages?|has_?(?:more|next)"
@@ -75,14 +68,9 @@ def json_shape(data: Any) -> dict[str, Any]:
         return {"kind": "data", "paging": paging[:6]}
     count, path, items = best
     keys = list(dict.fromkeys(str(k) for item in items[:5] for k in item))[:14]
-    signals = [
-        name
-        for name, pattern in (("ids", IDS), ("names", NAMES), ("prices", PRICES), ("stock", STOCKS))
-        if any(pattern.search(k) or (name == "ids" and CAMEL_IDS.search(k)) for k in keys)
-    ]
-    products = count >= 3 and bool({"ids", "names"} & set(signals)) and bool({"prices", "stock"} & set(signals))
+    signals = signals_of(keys)
     return {
-        "kind": "products" if products else "list",
+        "kind": "products" if product_like(count, signals) else "list",
         "path": path,
         "items": count,
         "keys": keys,
@@ -91,15 +79,40 @@ def json_shape(data: Any) -> dict[str, Any]:
     }
 
 
+# what some APIs put before their JSON so a page cannot run it as a script
+XSSI = (b")]}',", b")]}'", b"while(1);", b"for(;;);")
+
+
+def as_json(body: bytes) -> tuple[bool, Any]:
+    """(True, the data) when `body` is JSON, whatever its Content-Type says: an API can serve JSON as text/html.
+    A BOM and an anti-XSSI prefix are skipped. (False, None) otherwise."""
+    text = body.lstrip()
+    if text.startswith(b"\xef\xbb\xbf"):
+        text = text[3:].lstrip()
+    for prefix in XSSI:
+        if text.startswith(prefix):
+            text = text[len(prefix) :].lstrip()
+            break
+    if text[:1] not in (b"{", b"["):
+        return False, None
+    try:
+        return True, json.loads(text)
+    except (ValueError, RecursionError):
+        return False, None
+
+
 def shape(body: bytes, kind: str) -> dict[str, Any]:
-    """What one answer holds: a JSON shape, an HTML fragment's links and product links, or only its size."""
-    start = body.lstrip()[:1]
-    if "json" in kind or start in (b"{", b"["):
+    """What one answer holds: a JSON shape (the body read, not its Content-Type), an HTML fragment's links and
+    product links, or only its size."""
+    is_json, data = as_json(body)
+    if is_json:
+        return json_shape(data)
+    if "json" in kind:  # a bare string or number
         try:
             return json_shape(json.loads(body))
         except (ValueError, RecursionError):
             pass
-    if "html" in kind or start == b"<":
+    if "html" in kind or body.lstrip()[:1] == b"<":
         links = HREF.findall(body.decode("utf-8", "replace"))
         return {
             "kind": "html",
@@ -140,16 +153,20 @@ def call_record(call: dict[str, Any], host: str) -> dict[str, Any]:
         own = (urlsplit(call["url"]).hostname or "").removeprefix("www.").endswith(host.removeprefix("www."))
     except ValueError:
         own = False
+    found = shape(call["body"], call["type"])
+    kind = call["type"].split(";")[0].strip()
     return {
         "method": call["method"],
         "url": call["url"][:300],
         "status": call["status"],
-        "type": call["type"].split(";")[0].strip(),
+        "type": kind,
         "bytes": len(call["body"]),
         "own": own,
         "operation": operation(call["sent"]) if call.get("sent") else None,
         "needs": sent_needs(call.get("headers") or {}),
-        **shape(call["body"], call["type"]),
+        # JSON served as text/html: a scraper must parse it whatever the header says
+        "json_as": kind if found["kind"] in ("products", "list", "data") and "json" not in kind else None,
+        **found,
     }
 
 

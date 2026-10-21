@@ -5,7 +5,7 @@ import json
 from fakes import BASE
 
 from recon.browser import TRACKERS
-from recon.calls import call_record, json_shape, operation, rank, replay_headers, sent_needs, shape
+from recon.calls import as_json, call_record, json_shape, operation, rank, replay_headers, sent_needs, shape
 
 
 def items(n: int, **extra: object) -> list[dict[str, object]]:
@@ -115,3 +115,15 @@ def test_product_lists_rank_first() -> None:
         "shop.test",
     )
     assert sorted([data, lst], key=rank) == [lst, data]
+
+
+def test_json_is_read_from_the_body_not_its_type() -> None:
+    """A shop's API serves JSON as text/html; others put an anti-XSSI prefix or a BOM before it."""
+    listed = json.dumps({"code": 0, "result": {"pageOfItems": items(25, price=1, stock_num=3)}}).encode()
+    assert shape(listed, "text/html; charset=UTF-8")["kind"] == "products"
+    assert as_json(b")]}',\n" + listed)[0] and as_json(b"\xef\xbb\xbf" + listed)[0]
+    assert as_json(b"<html>{}</html>") == (False, None) and as_json(b"{broken") == (False, None)
+    call = {"method": "GET", "url": f"{BASE}/x", "status": 200, "type": "text/html; charset=UTF-8", "body": listed}
+    assert call_record(call, "shop.test")["json_as"] == "text/html"
+    typed = call_record({**call, "type": "application/json"}, "shop.test")
+    assert typed["json_as"] is None

@@ -1,7 +1,7 @@
 """sample_findings(): the traps in a sample of product pages."""
 
 import pytest
-from fakes import ld, page
+from fakes import NuxtSite, ld, page
 
 from recon.sample import page_record, sample_findings
 
@@ -43,3 +43,13 @@ def test_price_ladder_hints() -> None:
     assert not RECORDS[0]["ladder"]
     assert page_record(page("<p>Qty 2 10 25+ Unit Price 0.50 0.40</p>"))["ladder"], "a quantity column of three"
     assert not page_record(page("<p>Qty 2 2+ Unit Price 19.98</p>"))["ladder"], "one tier and its quote row"
+
+
+def test_a_part_number_only_the_state_holds_counts() -> None:
+    """A Nuxt shop: JSON-LD without mpn on some product pages, the state's pro_sno on all of them."""
+    site = NuxtSite()
+    records = [page_record(page(site.product_page(n))) for n in range(4)]
+    found = sample_findings(records)
+    assert (found["coverage"]["mpn"], found["from_state"]) == (4, {"mpn": 2})
+    assert not any("part number in the page's words" in t for t in found["traps"])
+    assert records[1]["from_state"] == ["mpn"] and records[0]["from_state"] == []

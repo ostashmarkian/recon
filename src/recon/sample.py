@@ -51,6 +51,7 @@ def page_record(a: Answer) -> dict[str, Any]:
     after; the stock number its words show; a hint of a price ladder."""
     data = product_data(a)
     ld, md = data["jsonld"], data["microdata"]
+    held = ((data["state"] or {}).get("product") or {}).get("fields") or {}  # the product in the page's state
     gtin = next((v for k, v in md.items() if k.lower().startswith("gtin")), None)
     fields = {
         "mpn": ld.get("mpn") or md.get("mpn"),
@@ -62,6 +63,10 @@ def page_record(a: Answer) -> dict[str, Any]:
         "availability": ld.get("availability") or md.get("availability"),
         "inventory": ld.get("inventory") or md.get("inventoryLevel"),
     }
+    # what only the page's state holds: a scraper reading the state has it all the same
+    from_state = [k for k in ("mpn", "brand", "price") if not fields[k] and held.get(k)]
+    for k in from_state:
+        fields[k] = held[k]
     words = visible_text(a.head)
     count = STOCK_COUNT.search(words)
     steps = {int(s) for s in QTY_STEP.findall(words)}
@@ -75,7 +80,10 @@ def page_record(a: Answer) -> dict[str, Any]:
     )
     return {
         "url": a.url,
+        "kind": data["kind"],
+        "kind_why": data["kind_why"],
         "fields": fields,
+        "from_state": from_state,
         "vat_included": ld.get("vat_included"),
         "labels": sorted(data["labels"]),
         "stock_words": (count.group(1).replace(" ", "") + (count.group(2) or "")) if count else None,
@@ -126,6 +134,8 @@ def sample_findings(records: list[dict[str, Any]]) -> dict[str, Any]:
         "vat_included": dict(vats),
         "ladder": sum(r["ladder"] for r in records),
         "stock_numbers": len(shown),
+        # pages where a field was found in the page's state only
+        "from_state": {k: n for k in SAMPLE_FIELDS if (n := sum(k in r.get("from_state", ()) for r in records))},
         "rows": [
             {
                 "url": r["url"],

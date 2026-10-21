@@ -56,16 +56,35 @@ async def open_in_browser(url: str, wait: float = settings.BROWSER_WAIT) -> dict
                 await context.close()
 
 
+class BrowserMissing(RuntimeError):
+    """patchright or Google Chrome is not on this machine: the step is skipped, and the report says which."""
+
+
+def chrome_missing(e: Exception) -> bool:
+    """Whether patchright failed to start Chrome because it is not installed."""
+    said = str(e).lower()
+    missing = ("is not found", "doesn't exist", "not installed", "no such file")
+    return "chrome" in said and any(k in said for k in missing)
+
+
 async def watch_in_browser(urls: list[str], wait: float = settings.WATCH_WAIT) -> dict[str, Any]:
     """What the pages ask for once Chrome draws them: every XHR and fetch each of `urls` makes, with its answer's
     first WATCH_BODY bytes. Each page loads until the network is quiet, then is scrolled once for what loads
-    lazily. Trackers are left out (TRACKERS)."""
-    from patchright.async_api import async_playwright
+    lazily. Trackers are left out (TRACKERS). BrowserMissing when patchright or Chrome is not there."""
+    try:
+        from patchright.async_api import async_playwright
+    except ImportError as e:
+        raise BrowserMissing('patchright is not installed (pip install "site-recon[browser]")') from e
 
     began = time.monotonic()
     seen: list[dict[str, Any]] = []
     async with async_playwright() as p:
-        browser = await p.chromium.launch(channel="chrome", headless=True)
+        try:
+            browser = await p.chromium.launch(channel="chrome", headless=True)
+        except Exception as e:
+            if chrome_missing(e):
+                raise BrowserMissing("Google Chrome is not installed") from e
+            raise
         try:
             page = await browser.new_page()
             ua = (await page.evaluate("navigator.userAgent")).replace("HeadlessChrome/", "Chrome/")

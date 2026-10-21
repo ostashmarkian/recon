@@ -9,10 +9,12 @@ import pytest
 from fakes import BASE, FakeSite, scan
 
 from recon import settings
+from recon.api import api_bases, helpers_in, routes_in
 from recon.cli import stem_of
 from recon.clients import Answer
 from recon.pages import drawn, gunzip, product_data, read_sitemap, visible_text
 from recon.probe import Recon, fetch_within
+from recon.state import read_state
 
 MB = 1_000_000
 
@@ -103,3 +105,40 @@ def test_a_sitemap_bomb_in_a_run_is_an_unreadable_file(monkeypatch: pytest.Monke
     f, _, _ = scan(FakeSite(), burst=False)
     unreadable = [x for x in f["sitemap"]["files"] if str(x.get("verdict", "")).startswith("unreadable")]
     assert [x["url"] for x in unreadable] == [f"{BASE}/sitemap-2.xml.gz"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '"' * MB,
+        "url:" * (MB // 4),
+        ".get(" * (MB // 5),
+        "antiSpider" * (MB // 10),
+        'apiHost:"' * (MB // 9),
+        "__NUXT_DATA__" * (MB // 13),
+        "<script>__NUXT_DATA__" * (MB // 21),
+        ('"/api' + "/a" * 40 + " ") * (MB // 86),
+    ],
+    ids=[
+        "many quotes",
+        "url: everywhere",
+        "calls everywhere",
+        "helpers everywhere",
+        "keys everywhere",
+        "markers",
+        "scripts",
+        "API paths never closed",
+    ],
+)
+def test_a_hostile_bundle_or_state_is_read_in_linear_time(body: str) -> None:
+    began = time.monotonic()
+    routes_in(body)
+    helpers_in(body)
+    api_bases(f"<script>{body}</script>")
+    read_state(body)
+    assert time.monotonic() - began < 5.0
+
+
+def test_a_state_of_a_thousand_levels_is_read() -> None:
+    nested = "[" * 5000 + "]" * 5000
+    assert read_state(f'<script id="__NUXT_DATA__" type="application/json">{nested}</script>') is not None

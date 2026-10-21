@@ -1,5 +1,5 @@
 """What an answer says - a verdict (ok, a refusal, no answer) and who gave
-it - and which services stand in front of a site."""
+it - and which services stand in front of a site or of its API's host."""
 
 import html as entities
 import re
@@ -48,10 +48,37 @@ GUARDS = (
     "AWS WAF",
     "Vercel Firewall",
     "Myra Security",
+    # its cookies acw_tc and cdn_sec_tc are set by Alibaba Cloud's WAF and its CDN's security layer, both of which
+    # turn away an IP by its rate (CC protection) and serve the acw_sc__v2 JavaScript challenge; the CDN alone
+    # (Tengine, EagleId, ens-cache) is "Alibaba Cloud (CDN)", no guard, as CloudFront and Fastly are not
+    "Alibaba Cloud WAF",
 )
 
 
 F5_COOKIE = re.compile(r"TS[0-9a-f]{6,}$")
+
+
+# Alibaba Cloud's security cookies: the WAF's acw_tc and the challenge's acw_sc__v2, the CDN security layer's
+# cdn_sec_tc
+ALIBABA_COOKIES = ("acw_tc", "acw_sc__v2", "cdn_sec_tc")
+
+
+# What a host's canonical name (its CNAME) says stands in front of it
+CNAMES = (
+    ("Alibaba Cloud (CDN)", re.compile(r"\.(?:ali)?kunlun\w*\.(?:com|net)$|\.cdngslb\.com$|\.tbcache\.com$", re.I)),
+    ("CloudFront (CDN)", re.compile(r"\.cloudfront\.net$", re.I)),
+    ("Fastly (CDN)", re.compile(r"\.fastly(?:lb)?\.net$", re.I)),
+    ("Akamai (CDN)", re.compile(r"\.(?:akamaiedge|edgekey|edgesuite|akamai|akamaized)\.net$", re.I)),
+    ("Cloudflare (CDN)", re.compile(r"\.cdn\.cloudflare\.net$", re.I)),
+    ("Azure Front Door (CDN)", re.compile(r"\.(?:azurefd|azureedge)\.net$", re.I)),
+    ("Imperva", re.compile(r"\.incapdns\.net$", re.I)),
+)
+
+
+def cname_vendor(canonical: str | None) -> tuple[str, str] | None:
+    """(the service, "CNAME <name>") that a host's canonical name points to, or None."""
+    name = (canonical or "").rstrip(".").lower()
+    return next(((vendor, f"CNAME {name}") for vendor, pattern in CNAMES if pattern.search(name)), None)
 
 
 # A redirect that is a block: a path segment naming one, as /CustomError/error403.html or /captcha/?from=...
@@ -100,6 +127,12 @@ def judge(a: Answer) -> tuple[str, str]:
         return "challenge", "Sucuri"
     if "x-sucuri-block" in h or "sucuri website firewall" in low:
         return "blocked", "Sucuri"
+    # Alibaba Cloud's challenge: a small page, often a 200, whose script sets the acw_sc__v2 cookie and reloads;
+    # its WAF's block page is a 405 (or a 403) naming its _waf_ request id or errors.aliyun.com
+    if "acw_sc__v2" in low and len(a.body) < 20_000:
+        return "challenge", "Alibaba Cloud WAF"
+    if s in (403, 405) and ("_waf_" in low or "errors.aliyun.com" in low):
+        return "blocked", "Alibaba Cloud WAF"
     if s in (403, 429, 503):
         plain = entities.unescape(low)  # Akamai writes "Reference&#32;&#35;18..." and "errors&#46;edgesuite&#46;net"
         if any(k in low for k in ("<title>just a moment", "cf-chl", "cf_chl", "jschl")):
@@ -199,6 +232,24 @@ def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:
             add("Vercel Firewall", "x-vercel-mitigated")
         if "myracloud" in server:
             add("Myra Security", "server: myracloud")
+        alibaba = [c for c in ALIBABA_COOKIES if c in cookies]
+        for name in alibaba:
+            add("Alibaba Cloud WAF", f"cookie {name}")
+        if "acw_sc__v2" in a.head.lower() and judge(a)[0] == "challenge":
+            add("Alibaba Cloud WAF", "the acw_sc__v2 challenge")
+        edge = [
+            said
+            for said, seen in (
+                ("eagleid", "eagleid" in h),
+                ("via: ens-cache", "ens-cache" in via),
+                ("ali-swift-* header", any(k.startswith("ali-swift") for k in h)),
+            )
+            if seen
+        ]
+        for said in edge:
+            add("Alibaba Cloud (CDN)", said)
+        if "tengine" in server and (edge or alibaba):  # Tengine alone is any nginx fork's: with Alibaba's marks only
+            add("Alibaba Cloud (CDN)", "server: Tengine")
         if "x-amz-cf-id" in h or "cloudfront" in via:
             add("CloudFront (CDN)", "x-amz-cf-id or via")
         if h.get("x-served-by", "").startswith("cache-") or "fastly" in via or "x-fastly-request-id" in h:

@@ -46,3 +46,9 @@ def test_a_lone_surrogate_is_written_all_the_same(tmp_path: Path) -> None:
 def test_a_report_of_another_shape_is_not_compared() -> None:
     assert changes_since({"platforms": ["Shopify"]}, {"platforms": []}) is None
     assert changes_since({"way_in": "a"}, {"way_in": "b"}) == ["way in: a -> b"]
+
+
+def test_the_watch_is_on_unless_no_watch() -> None:
+    assert arguments(["shop.test"]).watch is True
+    assert arguments(["shop.test", "--no-watch"]).watch is False
+    assert arguments(["shop.test", "--watch"]).watch is True, "kept for old command lines"

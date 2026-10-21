@@ -3,7 +3,7 @@
 import pytest
 from fakes import CHALLENGE
 
-from recon.classify import GUARDS, judge, passes, vendors_of
+from recon.classify import GUARDS, cname_vendor, judge, passes, vendors_of
 from recon.clients import Answer
 
 ANSWERS = [
@@ -118,3 +118,40 @@ def test_vendors_of() -> None:
     assert sorted(seen) == ["Akamai", "CloudFront (CDN)", "Cloudflare", "F5 BIG-IP ASM"]
     assert seen["Cloudflare"] == ["cf-ray", "server: cloudflare", "cookie __cf_bm"]
     assert "CloudFront (CDN)" not in GUARDS, "a CDN is not a guard"
+
+
+def test_alibaba_cloud_in_front_of_an_api_host() -> None:
+    """The WAF's cookies make it a guard; the CDN alone (Tengine with EagleId, ens-cache) is none."""
+    seen = vendors_of([Answer("u", 200, {"server": "Tengine"}, ("acw_tc", "cdn_sec_tc"))])
+    assert seen == {
+        "Alibaba Cloud WAF": ["cookie acw_tc", "cookie cdn_sec_tc"],
+        "Alibaba Cloud (CDN)": ["server: Tengine"],
+    }
+    edge = vendors_of([Answer("u", 200, {"server": "Tengine", "eagleid": "x", "via": "cache1.l2, ens-cache3"})])
+    assert edge == {"Alibaba Cloud (CDN)": ["eagleid", "via: ens-cache", "server: Tengine"]}
+    assert vendors_of([Answer("u", 200, {"server": "Tengine"})]) == {}, "Tengine alone is any nginx fork's"
+    assert "Alibaba Cloud WAF" in GUARDS and "Alibaba Cloud (CDN)" not in GUARDS
+
+
+def test_alibaba_cloud_challenge_and_block() -> None:
+    challenge = (
+        b"<html><script>var arg1='3E40C5';setTimeout(function(){document.cookie='acw_sc__v2='+x;"
+        b"location.reload()},0)</script></html>"
+    )
+    page = Answer("u", 200, {"server": "Tengine"}, ("acw_tc",), challenge)
+    assert judge(page) == ("challenge", "Alibaba Cloud WAF")
+    assert "the acw_sc__v2 challenge" in vendors_of([page])["Alibaba Cloud WAF"]
+    blocked = Answer("u", 405, {}, (), b"<html>... _waf_bd8ce2ce37 ... errors.aliyun.com ...</html>")
+    assert judge(blocked) == ("blocked", "Alibaba Cloud WAF")
+    big = Answer("u", 200, {}, (), b"acw_sc__v2" + b"<p>a page</p>" * 5_000)
+    assert judge(big)[0] == "ok", "a page that only names the cookie is no challenge"
+
+
+def test_who_a_cname_names() -> None:
+    assert cname_vendor("api.shop.test.w.kunlungr.com") == (
+        "Alibaba Cloud (CDN)",
+        "CNAME api.shop.test.w.kunlungr.com",
+    )
+    assert cname_vendor("x.cdn.cloudflare.net.")[0] == "Cloudflare (CDN)"  # type: ignore[index]
+    assert cname_vendor("dualstack.python.map.fastly.net")[0] == "Fastly (CDN)"  # type: ignore[index]
+    assert cname_vendor("api.shop.test") is None and cname_vendor(None) is None
