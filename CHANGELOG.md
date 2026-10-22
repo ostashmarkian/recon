@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 - 2026-10-22
 
 From a run on a Nuxt 3 shop behind Cloudflare whose data sits on an open JSON API on another host:
 

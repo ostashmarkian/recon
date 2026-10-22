@@ -7,7 +7,7 @@
 Or, from a shell: recon https://www.example.com (see recon.cli).
 """
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 from .probe import Recon
 from .report import report
