@@ -140,5 +140,11 @@ def test_a_hostile_bundle_or_state_is_read_in_linear_time(body: str) -> None:
 
 
 def test_a_state_of_a_thousand_levels_is_read() -> None:
-    nested = "[" * 5000 + "]" * 5000
+    nested = "[" * 2000 + "]" * 2000
     assert read_state(f'<script id="__NUXT_DATA__" type="application/json">{nested}</script>') is not None
+
+
+def test_a_state_deeper_than_json_parses_is_left_unread() -> None:
+    # Python 3.12 and 3.13 parse JSON to ~2,000-5,000 levels, 3.14 deeper: past that, no state, no crash
+    nested = "[" * 50_000 + "]" * 50_000
+    read_state(f'<script id="__NUXT_DATA__" type="application/json">{nested}</script>')
