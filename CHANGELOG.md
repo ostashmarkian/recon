@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.2 - 2026-10-25
 
 From a run on an electronics marketplace on two hosts of one domain, behind Alibaba Cloud, whose scraper was then
 built from routes recon had not found:
