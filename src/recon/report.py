@@ -99,7 +99,10 @@ def watch_line(w: dict[str, Any]) -> str:
         c for c in calls if c["kind"] == "html" and c.get("product_links", 0) >= 3
     ]
     lead = "; ".join(f"{c['method']} {short_url(c['url'])}: {what_call(c)}" for c in best[:2])
-    return f"{len(calls)} calls on {len(w['pages'])} pages" + (f"; {lead}" if lead else "; none of them a product list")
+    given = " (the page given among them, though robots.txt disallows it)" if w.get("given_disallowed") else ""
+    return f"{len(calls)} calls on {len(w['pages'])} pages{given}" + (
+        f"; {lead}" if lead else "; none of them a product list"
+    )
 
 
 def short_url(url: str, most: int = 90) -> str:
@@ -413,6 +416,25 @@ def report(f: Findings) -> str:
     if f.get("ua_filter") and f["ua_filter"] not in level.get("said", ""):  # said above in the level
         out.append(f"- **User-Agent filter:** {f['ua_filter']} (not protection here: the burst sends a browser's)")
     out.append(f"- **Way in:** {f['way_in']}")
+    if f.get("region_block"):
+        out.append(
+            f"- **Region block:** the site refuses the country this machine is in ({f['region_block']}): run recon,"
+            " and a scraper, from another"
+        )
+    given = (f.get("robots") or {}).get("given_disallowed") or {}
+    if given:
+        out.append(
+            "- **robots.txt disallows the page given:** "
+            + "; ".join(f"{short_url(u)} ({rule})" for u, rule in given.items())
+            + ". recon reads and watches it as asked; a crawler is asked to stay off it, and a scraper of it goes"
+            " against the site's word"
+        )
+    if f.get("wired"):
+        out.append(
+            "- **Captchas and bot checks wired in:** "
+            + "; ".join(f"{name} ({', '.join(where[:3])})" for name, where in f["wired"].items())
+            + ". The pages load them whether or not they fire: a faster or longer run may meet them"
+        )
     out += api_lines(f)
     if session.get("skipped"):
         out.append(f"- **Session lock:** not measured ({session['skipped']})")
@@ -476,6 +498,12 @@ def report(f: Findings) -> str:
     out.append(f"- **Product sample:** {sample_line(sample)}")
     for trap in sample.get("traps") or []:
         out.append(f"  - {trap}")
+    if f.get("sister_products"):
+        hosts = ", ".join(f"{h} ({n} links)" for h, n in f["sister_products"].items())
+        out.append(
+            f"  - product links lead to another host of the same site: {hosts}; run recon on it for its product pages"
+            " and sitemaps"
+        )
     out.append(f"- **Freshness:** {freshness_line(f.get('freshness') or {})}")
     for name, seen in (f.get("rendering") or {}).items():
         if seen["drawn"]:
@@ -724,5 +752,10 @@ def report(f: Findings) -> str:
             + (f" {s['kind']}, {s['addresses']:,}" if "kind" in s else f" {s['verdict']}")
             + (f" ({chain_said(s['chain'])})" if s.get("chain") else "")
         )
+    llms = f.get("llms") or {}
+    if llms.get("there"):
+        out.append(f"- llms.txt: {llms['status']}, {llms['bytes']:,} bytes, first line: {llms['first']}")
+    elif llms:
+        out.append("- llms.txt: " + (llms.get("skipped") or f"not there ({llms.get('status')} {llms.get('verdict')})"))
     out.append(f"- Pages in the pool: {f.get('pool', 0)}")
     return "\n".join(out) + "\n"

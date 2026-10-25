@@ -80,3 +80,11 @@ def test_percent_encoding_and_comments() -> None:
 def test_an_unreadable_robots_txt_disallows_everything() -> None:
     assert not Robots(disallow_all=True).allows("https://s.test/")
     assert Robots().allows("https://s.test/anything"), "none there: everything allowed"
+
+
+def test_the_rule_that_keeps_an_address_out_is_named() -> None:
+    robots = parse("User-agent: *\nDisallow: /*?*\nAllow: /search?open\n")
+    assert robots.rule_for("https://s.test/?keyword=STM32") == "Disallow: /*?*"
+    assert robots.rule_for("https://s.test/search?open=1") is None, "the longer Allow wins"
+    assert robots.rule_for("https://s.test/cate-search") is None
+    assert Robots(disallow_all=True).rule_for("https://s.test/") == "everything (robots.txt could not be read)"

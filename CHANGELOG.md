@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+From a run on an electronics marketplace on two hosts of one domain, behind Alibaba Cloud, whose scraper was then
+built from routes recon had not found:
+
+- **A redirect to another host of the same domain is followed.** The search host sent its home page to www, and
+  recon stopped as at "another site"; four runs ended after one request. Now search.shop.com to www.shop.com is
+  one site: the run goes on there, and the report says so.
+- **A template's text is no link.** The first link was `/{{! firstPdfUrl}}`, a doT template left unrendered, and
+  the deeper page, the clients' table, the not-found probe and the watch all asked it and met 404s. Hrefs holding
+  `{{`, `{%`, `${`, `<%` are left out; a deeper page that did not answer is not watched.
+- **The page given is watched, and judged by robots.txt.** Its robots.txt was `Disallow: /*?*`, so the watch had
+  left out the search page it was given, the one page whose calls showed the API. The page given is now opened in
+  Chrome whatever robots.txt says of it (recon read it already), and the verdict says when robots.txt disallows
+  it, with the rule. The pages recon picks itself, and the calls asked again, still keep to robots.txt.
+- **Product links on another host of the domain are named**, with the advice to run recon there for its product
+  pages and sitemaps.
+- **A guessed sitemap the site refuses is no refusal of the site.** A 405 on `/sitemap.xml.gz` had shown as
+  "refused in other steps: sitemaps (1 blocked)".
+- **Captchas and bot checks wired into the pages are named** though none fired: a GeeTest overlay
+  (`gt_type=search_crawl`), NetEase Yidun, Alibaba Cloud's captcha, reCAPTCHA, hCaptcha, Turnstile, Arkose,
+  FingerprintJS and webdriver checks, in the pages and the JS bundles. The level stays what the run met.
+- **`/llms.txt` is read**: there or not, its size and first line.
+- **Alibaba Cloud's captcha page is a challenge** (`aliyun_waf_aa` in its head, a slider to drag), as its
+  `acw_sc__v2` page was; it had passed as a page. **A country refused by its CDN is said**
+  (`X-Tengine-Error: denied by region_block`), with the advice to run from another: from such a country every
+  client is turned away and the site looks closed.
+
 ## 1.2.1 - 2026-10-22
 
 From a run on a Nuxt 3 shop behind Cloudflare whose data sits on an open JSON API on another host:

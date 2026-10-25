@@ -11,8 +11,10 @@ The report goes to recon-reports/<host>-<when>.md and .json and to stdout;
 the newest earlier .json of the same host there, or --compare FILE, is set
 against it: what changed since.
 
-1. The home page (its redirects on the site followed: one to another site
-   stops the run, which names the address to run on), robots.txt, the sitemaps it names
+1. The home page (its redirects on the site and to another host of its
+   domain followed - search.shop.com to www.shop.com is said and looked at
+   there - one to another site stops the run, which names the address to run
+   on), robots.txt (the page given judged by it), /llms.txt, the sitemaps it names
    or else the first of SITEMAP_PATHS that answers (SITEMAP_FILES at most,
    redirects on the site followed and named), and one deeper page: --page,
    or a product the sitemap or the home page's links point to, picked at
@@ -107,6 +109,7 @@ import html as entities
 import itertools
 import logging
 import random
+import re
 import time
 import zlib
 from collections.abc import Awaitable, Callable, Sequence
@@ -139,7 +142,7 @@ from .api import (
 )
 from .browser import BrowserMissing, open_in_browser, watch_in_browser
 from .calls import as_json, call_record, rank, replay_headers, shape
-from .classify import LOST, REFUSALS, cname_vendor, judge, title_of, vendors_of
+from .classify import LOST, REFUSALS, WIRED, cname_vendor, judge, region_block, title_of, vendors_of, wired_in
 from .clients import Answer, Client, make_client
 from .findings import (
     Findings,
@@ -190,10 +193,18 @@ def looks_like_sitemap(body: bytes) -> bool:
     return body[:2] == b"\x1f\x8b" or b"<urlset" in start or b"<sitemapindex" in start
 
 
+# a template's text the page left unrendered: doT's {{! firstPdfUrl}}, Mustache, Jinja, ERB, a JS template literal
+TEMPLATE = re.compile(r"\{\{|\{%|\$\{|<%|%7B%7B", re.I)
+
+
 def join(base: str, href: str) -> str | None:
-    """`href` read against `base`, entities decoded; None for an address Python cannot parse."""
+    """`href` read against `base`, entities decoded; None for an address Python cannot parse, or a template's
+    text left unrendered (/{{! firstPdfUrl}}), no address at all."""
+    href = entities.unescape(href).strip()
+    if TEMPLATE.search(href):
+        return None
     try:
-        return urljoin(base, entities.unescape(href).strip())
+        return urljoin(base, href)
     except ValueError:
         return None
 
@@ -204,6 +215,14 @@ def same_host(a: str, b: str) -> bool:
         return (urlsplit(a).hostname or "").removeprefix("www.") == (urlsplit(b).hostname or "").removeprefix("www.")
     except ValueError:
         return False
+
+
+def host_of(url: str) -> str:
+    """An address's host, lower case; "" for one Python cannot parse."""
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 async def fetch_within(
@@ -311,6 +330,7 @@ class Recon:
         self.internal_hosts: set[str] = set()  # hosts no public DNS holds, or private ones: never asked
         self.api_answers: dict[tuple[str, str], tuple[Answer, dict[str, Any]]] = {}  # (method, url): answer, shape
         self.api_hosts: dict[str, dict[str, Any]] = {}  # what each API host is: its DNS, what answered its robots.txt
+        self.wired: dict[str, list[str]] = {}  # captcha and bot-check services the JS bundles name: {name: [file]}
         self.best: str | None = None
         self.f: Findings = {"url": url, "began": datetime.now().astimezone().isoformat(timespec="seconds")}
 
@@ -398,6 +418,8 @@ class Recon:
             if self.long_minutes:
                 await self.isolated("long", self.long_session)
             self.computed("vendors", lambda: vendors_of(self.seen))
+            self.computed("wired", self.wired_found)
+            self.computed("region_block", lambda: region_block(self.seen))
             self.computed("ua_filter", lambda: ua_filter(f))
             await self.isolated("burst", self.burst)
         finally:  # whatever broke, the findings close with what the report needs
@@ -410,6 +432,21 @@ class Recon:
             f["requests"] = self.requests
             f["seconds"] = round(time.monotonic() - began, 1)
         return f
+
+    def wired_found(self) -> dict[str, list[str]]:
+        """{service: [where]}: the captcha and bot-check services the pages read and their scripts load, whether
+        or not they fired in this run."""
+        found = {name: list(where) for name, where in self.wired.items()}
+        pages = [("the home page", self.home_answer), ("the product page", self.product_answer)]
+        pages += [("a listing", a) for a in self.listings.values()]
+        for where, a in pages:
+            if a is None or a.error:
+                continue
+            for name in wired_in(a.text):
+                if where not in found.setdefault(name, []):
+                    found[name].insert(0, where)
+        order = [name for name, _ in WIRED]
+        return dict(sorted(found.items(), key=lambda kv: order.index(kv[0])))
 
     async def isolated(self, name: str, do: Callable[[], Awaitable[None]]) -> None:
         """One step; its failure is written down in the findings, and the run goes on."""
@@ -472,7 +509,8 @@ class Recon:
             if not (home.status and 300 <= home.status < 400 and home.location):
                 break
             hop = join(url, home.location)
-            if hop is None or judge(home)[0] == "blocked" or not same_host(hop, url):
+            sister = hop is not None and not same_host(hop, url) and same_domain(host_of(hop), host_of(url))
+            if hop is None or judge(home)[0] == "blocked" or not (same_host(hop, url) or sister):
                 why = "a block" if judge(home)[0] == "blocked" else "another site" if hop else "not an address"
                 f["home_redirect"] = f"{home.status} to {home.location}: not followed ({why})"
                 if why == "another site":  # a site that moved: its report is a run on the new address
@@ -481,6 +519,8 @@ class Recon:
                         "it is given only: run it on that address"
                     )
                 break
+            if sister:  # search.shop.com to www.shop.com: one site, looked at where it sends visitors
+                f["home_redirect"] = f"{home.status} to {hop}: followed, another host of the same site"
             url = hop
         self.home, self.home_answer = url, home
         parts = urlsplit(url)
@@ -503,6 +543,10 @@ class Recon:
             "crawl_delay": self.robots.crawl_delay_said,
             "sitemaps": sitemaps,
         }
+        pages = [u for u in dict.fromkeys((self.start, url)) if same_host(u, url) and state == "read"]
+        given = {u: rule for u in pages if (rule := self.robots.rule_for(u))}  # a rule it wrote, not a refusal
+        if given:  # recon reads the page it is given, but a scraper asking it goes where the site said no
+            f["robots"]["given_disallowed"] = given
         self.crawl_delay = self.robots.crawl_delay
         if self.crawl_delay and not self.pause_given:
             if self.crawl_delay > settings.CRAWL_DELAY_MOST:
@@ -520,12 +564,21 @@ class Recon:
                     self.pause,
                 )
         f["pause"] = self.pause
+        f["llms"] = await self.llms_txt(scout)
 
         guesses = [self.origin + path for path in settings.SITEMAP_PATHS]
         self.step = "sitemaps"
         await self.sitemaps(scout, sitemaps or [u for u in guesses if self.robots.allows(u)], guessed=not sitemaps)
         self.step = None
-        links = [u for u in (self.same_site(join(url, h)) for h in HREF.findall(home.head)) if u]
+        hrefs = [u for u in (join(url, h) for h in HREF.findall(home.head)) if u]
+        links = [u for u in (self.same_site(h) for h in hrefs) if u]
+        sisters: dict[str, int] = {}  # product links to another host of the site's domain: www.shop.com/detail/...
+        for h in hrefs:
+            sister = not same_host(h, url) and same_domain(host_of(h), host_of(url))
+            if sister and PRODUCT_HINT.search(urlsplit(h).path):
+                sisters[host_of(h)] = sisters.get(host_of(h), 0) + 1
+        if sisters:
+            f["sister_products"] = dict(sorted(sisters.items(), key=lambda kv: -kv[1])[:3])
         listed = [u for u in (self.same_site(u) for u in self.listed) if u]
         pool = list(dict.fromkeys(listed + links))
         pool = [u for u in pool if u.rstrip("/") != url.rstrip("/")]
@@ -549,6 +602,19 @@ class Recon:
         f["page_from"] = "--page" if self.page else ("a product link" if products else "the first link")
         f["pool"] = len(pool)
 
+    async def llms_txt(self, scout: Client) -> dict[str, Any]:
+        """/llms.txt, the file a site writes for language models and agents (llmstxt.org): whether it is there, its
+        size and its first line. A page in its place (a soft 404) is none; robots.txt is kept to here too."""
+        url = self.origin + "/llms.txt"
+        if not self.robots.allows(url):
+            return {"there": None, "skipped": "robots.txt disallows it"}
+        a = await self.get(scout, url, own=False)
+        self.keep(a)
+        if a.status != 200 or judge(a)[0] != "ok" or a.text.lstrip()[:1] == "<":
+            return {"there": False, "status": a.status, "verdict": judge(a)[0]}
+        first = next((line.strip() for line in a.text.splitlines() if line.strip()), "")
+        return {"there": True, "status": a.status, "bytes": len(a.body), "first": short(first, 80)}
+
     async def sitemaps(self, scout: Client, queue: list[str], guessed: bool = False) -> None:
         """The sitemap files robots.txt names, and those their indexes list, SITEMAP_FILES at most: how many
         addresses, and a sample of them. An index's files are read next, depth first, SITEMAP_CHILDREN of them
@@ -568,7 +634,7 @@ class Recon:
             if url in seen:
                 continue
             seen.add(url)
-            a, chain = await self.follow(scout, url)
+            a, chain = await self.follow(scout, url, own=not guessed)  # a guess refused says nothing of the site
             asked += len([c for c in chain if "why" not in c]) or 1  # each hop asked; one not followed has a why
             moved = {"chain": chain} if chain else {}
             if a.status != 200:
@@ -614,11 +680,11 @@ class Recon:
             "files": files[:40],
         }
 
-    async def follow(self, client: Client, url: str) -> tuple[Answer, list[dict[str, Any]]]:
+    async def follow(self, client: Client, url: str, own: bool = True) -> tuple[Answer, list[dict[str, Any]]]:
         """`url`, its redirects on the site followed, REDIRECTS at most and each where robots.txt allows: the last
         answer, and the chain [{url, status}] when it moved. A hop to another site, or one robots.txt keeps out,
-        is named with why and not asked."""
-        a = await self.get(client, url)
+        is named with why and not asked. `own` as get() takes it."""
+        a = await self.get(client, url, own=own)
         chain: list[dict[str, Any]] = []
         for _ in range(settings.REDIRECTS):
             if not (a.status and 300 <= a.status < 400 and a.location):
@@ -643,7 +709,7 @@ class Recon:
                 chain.append({"url": hop or a.location, "status": None, "why": why})
                 return a, chain
             url = hop
-            a = await self.get(client, url)
+            a = await self.get(client, url, own=own)
         if chain:
             chain.append({"url": url, "status": a.status})
         return a, chain
@@ -1181,6 +1247,9 @@ class Recon:
             for h in helpers_in(js):
                 if not (helpers.get(h["name"]) or {}).get("sets"):
                     helpers[h["name"]] = {**h, "in": where}
+            for name in wired_in(js) if where != "an inline script" else ():  # the page's own: said of the page
+                if where not in self.wired.setdefault(name, []):
+                    self.wired[name].append(where)
             return len(found)
 
         cdns: set[str] = set()
@@ -1369,13 +1438,16 @@ class Recon:
         if not self.best:
             f["watch"] = {"skipped": "no client let in"}
             return
-        product = (f.get("product") or {}).get("url") or (self.deep if self.deep not in self.listings else None)
+        deep_ok = self.deep_answer is not None and judge(self.deep_answer)[0] == "ok"
+        product = (f.get("product") or {}).get("url") or (
+            self.deep if deep_ok and self.deep not in self.listings else None
+        )
         listing = self.listing_url()
-        urls = [u for u in dict.fromkeys([self.home, product, listing]) if u and self.robots.allows(u)]
+        # the page recon was given is watched whatever robots.txt says of it (it was asked for, and read already);
+        # the pages recon picks itself only where robots.txt allows
+        picked = [u for u in dict.fromkeys([product, listing]) if u and u != self.home and self.robots.allows(u)]
+        urls = [self.home, *picked]
         urls = urls[: settings.WATCH_PAGES]
-        if not urls:
-            f["watch"] = {"skipped": "robots.txt allows none of the pages"}
-            return
         try:
             seen = await self.watcher(urls)
         except BrowserMissing as e:  # not this machine's: said, and the run goes on
@@ -1395,6 +1467,8 @@ class Recon:
             pages.append({"url": page["url"], "status": page.get("status"), "title": page.get("title"), "calls": calls})
         await self.replay(found)
         f["watch"] = {"seconds": seen.get("seconds"), "pages": pages}
+        if not self.robots.allows(self.home):
+            f["watch"]["given_disallowed"] = self.home
 
     async def replay(self, found: list[tuple[dict[str, Any], dict[str, Any]]]) -> None:
         """The site's own product lists the pages fetched, REPLAY_MOST at most, asked once more with the plain

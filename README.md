@@ -81,6 +81,11 @@ product page read, each not-found probe. See the full report:
   challenge pages and a host's CNAME.
 - When something is challenged, opens real Chrome (via patchright) and checks
   whether its `cf_clearance` cookie lets the other clients in.
+- Names the captchas and bot checks the pages and their scripts load before
+  any of them fires (GeeTest, NetEase Yidun, Alibaba Cloud's, reCAPTCHA,
+  hCaptcha, Turnstile, Arkose, FingerprintJS, a webdriver check): a faster or
+  longer run may meet them. Says when the site refuses the country the run
+  comes from (Alibaba Cloud's `denied by region_block`).
 
 **Pace**
 - Session lock test: is the site slower with a cookie jar than without one?
@@ -95,8 +100,9 @@ product page read, each not-found probe. See the full report:
 - Asks each platform's open API for its catalogue count: WooCommerce Store
   API, Shopify `products.json`, Magento and BigCommerce GraphQL, OpenCart's
   empty search.
-- Reads sitemaps, plain or gzipped, guessed where robots.txt names none,
-  redirects on the site followed and named, and finds search services
+- Reads `/llms.txt`, and sitemaps, plain or gzipped, guessed where robots.txt
+  names none (a guess the site refuses says nothing of its guard), redirects
+  on the site followed and named, and finds search services
   (Algolia, Searchanise, Klevu, Doofinder, Boost and others), `__NEXT_DATA__`
   blobs and the API paths the pages call.
 
@@ -289,7 +295,9 @@ or public sites whose terms permit it. It is careful by default:
   `?remove_item=`, `action=add`. It is a list of patterns, so a shop with its
   own words for these can slip past it;
 - a home page that redirects to another site stops the run: recon looks at the
-  site it is given, and names the address to run it on;
+  site it is given, and names the address to run it on. A redirect to another
+  host of the same domain (search.shop.com to www.shop.com) is the same site:
+  followed, and said;
 - any refusal of the site's own pages, in any step, keeps the burst off. An
   API route's 401 (a key it wants) and a refusal by an API host or a CDN are
   theirs: reported with the API, they say nothing of the site's own guard;
@@ -304,9 +312,12 @@ or public sites whose terms permit it. It is careful by default:
   state. The watch's replay sends a page's own POST once more (a search query,
   say), but never a GraphQL mutation or a route that may change the site's
   state;
-- the watch opens three pages robots.txt allows in Chrome, as a visitor would,
-  and only where a plain client was let in: it reads what a site shows, it is
-  no way past a site that says no;
+- the watch opens up to three pages in Chrome, as a visitor would, and only
+  where a plain client was let in: it reads what a site shows, it is no way
+  past a site that says no. The page you give is one of them even when
+  robots.txt disallows it (recon reads it anyway, as you asked), and the report
+  says so with the rule; the pages recon picks itself are only those robots.txt
+  allows;
 - `--long` asks one page every 5-10 s (or the Crawl-delay), slower than the
   rest of the run, so it runs behind protection too; it stops at the first
   refusal. At an answer lost it asks a neutral host

@@ -26,17 +26,21 @@ class Robots:
 
     def allows(self, url: str) -> bool:
         """Whether a crawler may fetch `url`: the longest matching rule decides, Allow on a tie."""
+        return self.rule_for(url) is None
+
+    def rule_for(self, url: str) -> str | None:
+        """The rule that keeps `url` out, as robots.txt writes it ("Disallow: /*?*"), or None when it is allowed."""
         if self.disallow_all:
-            return False
+            return "everything (robots.txt could not be read)"
         parts = urlsplit(url)
         path = unquote((parts.path or "/") + (f"?{parts.query}" if parts.query else ""))
-        longest, allowed = -1, True
+        longest, allowed, deciding = -1, True, ""
         for allow, pattern in self.rules:
             if not pattern or not matches(pattern, path):
                 continue
             if len(pattern) > longest or (len(pattern) == longest and allow):
-                longest, allowed = len(pattern), allow
-        return allowed
+                longest, allowed, deciding = len(pattern), allow, pattern
+        return None if allowed else f"Disallow: {deciding}"
 
     @property
     def disallows(self) -> int:

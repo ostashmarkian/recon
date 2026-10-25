@@ -607,10 +607,16 @@ class TestWatch:
         assert (f["watch"], watcher.urls) == ({"skipped": "no client let in"}, [])
         assert "- **What the pages fetch:** not watched (no client let in)" in text
 
-    def test_only_pages_robots_txt_allows(self):
+    def test_the_page_given_though_robots_txt_disallows_it_and_no_other(self):
+        """recon was given the page and read it: Chrome opens it too, and the report says robots.txt keeps
+        crawlers off it; the pages recon picks itself stay where robots.txt allows."""
         watcher = FakeWatcher()
-        f, _, _ = scan(FakeSite(disallow="/"), burst=False, watch=True, watcher=watcher)
-        assert (f["watch"], watcher.urls) == ({"skipped": "robots.txt allows none of the pages"}, [])
+        f, text, _ = scan(FakeSite(disallow="/"), burst=False, watch=True, watcher=watcher)
+        assert watcher.urls == [f"{BASE}/"]
+        assert f["watch"]["given_disallowed"] == f"{BASE}/"
+        assert f["robots"]["given_disallowed"] == {f"{BASE}/": "Disallow: /"}
+        assert "(the page given among them, though robots.txt disallows it)" in text
+        assert "- **robots.txt disallows the page given:** / (Disallow: /)." in text
 
     def test_chrome_missing_is_said(self):
         _, text, _ = scan(FakeSite(), burst=False, watch=True, watcher=FakeWatcher(fail=True))

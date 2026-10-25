@@ -127,9 +127,13 @@ def judge(a: Answer) -> tuple[str, str]:
         return "challenge", "Sucuri"
     if "x-sucuri-block" in h or "sucuri website firewall" in low:
         return "blocked", "Sucuri"
-    # Alibaba Cloud's challenge: a small page, often a 200, whose script sets the acw_sc__v2 cookie and reloads;
-    # its WAF's block page is a 405 (or a 403) naming its _waf_ request id or errors.aliyun.com
-    if "acw_sc__v2" in low and len(a.body) < 20_000:
+    # Alibaba Cloud's challenge: a small page, often a 200, whose script sets the acw_sc__v2 cookie and reloads,
+    # or its captcha page (aliyun_waf_aa and aliyun_waf_bb in its head, a slider to drag); its WAF's block page is
+    # a 405 (or a 403) naming its _waf_ request id or errors.aliyun.com; its CDN refusing a country says so in
+    # X-Tengine-Error: "denied by region_block"
+    if h.get("x-tengine-error", "").lower().startswith("denied by region"):
+        return "blocked", "Alibaba Cloud WAF"
+    if "aliyun_waf_" in low or ("acw_sc__v2" in low and len(a.body) < 20_000):
         return "challenge", "Alibaba Cloud WAF"
     if s in (403, 405) and ("_waf_" in low or "errors.aliyun.com" in low):
         return "blocked", "Alibaba Cloud WAF"
@@ -237,6 +241,10 @@ def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:
             add("Alibaba Cloud WAF", f"cookie {name}")
         if "acw_sc__v2" in a.head.lower() and judge(a)[0] == "challenge":
             add("Alibaba Cloud WAF", "the acw_sc__v2 challenge")
+        if "aliyun_waf_" in a.head.lower() and judge(a)[0] == "challenge":
+            add("Alibaba Cloud WAF", "its captcha page (aliyun_waf_aa)")
+        if region_said(a):
+            add("Alibaba Cloud WAF", f"X-Tengine-Error: {h['x-tengine-error']}")
         edge = [
             said
             for said, seen in (
@@ -263,3 +271,38 @@ def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:
         if "x-varnish" in h:
             add("Varnish (cache)", "x-varnish")
     return found
+
+
+def region_said(a: Answer) -> bool:
+    """Whether an answer is a refusal of the country the request comes from, as Alibaba Cloud's CDN says it."""
+    return a.headers.get("x-tengine-error", "").lower().startswith("denied by region")
+
+
+def region_block(answers: Iterable[Answer]) -> str | None:
+    """How the site refused this machine's country, when it did: the header that said so, and on how many answers."""
+    said = [a for a in answers if not a.error and region_said(a)]
+    if not said:
+        return None
+    return f"X-Tengine-Error: {said[0].headers['x-tengine-error']}, on {len(said)} answers"
+
+
+# captcha and bot-check services a page loads whether or not they fire: (name, what in its HTML or scripts names
+# it). Search pages often wire one in for a crawler's pace only (GeeTest's gt_type=search_crawl).
+WIRED = (
+    ("GeeTest", ("geetest", "gt_type")),
+    ("NetEase Yidun", ("necaptcha", "dun.163.com", "dun.163yun.com")),
+    ("Alibaba Cloud captcha", ("aliyuncaptcha", "g.alicdn.com/awsc", "awsc.js", "nc_1_n1z")),
+    ("Tencent captcha", ("tencentcaptcha", "turing.captcha.qcloud.com", "ssl.captcha.qq.com")),
+    ("reCAPTCHA", ("google.com/recaptcha", "recaptcha.net/recaptcha", "grecaptcha")),
+    ("hCaptcha", ("js.hcaptcha.com", "hcaptcha.com/1/api.js")),
+    ("Cloudflare Turnstile", ("challenges.cloudflare.com/turnstile",)),
+    ("Arkose Labs", ("arkoselabs.com", "funcaptcha")),
+    ("FingerprintJS", ("fpjs.io", "fingerprintjs", "openfpcdn.io")),
+    ("a webdriver check", ("navigator.webdriver", "__webdriver_evaluate", "__selenium_unwrapped", "callphantom")),
+)
+
+
+def wired_in(text: str) -> list[str]:
+    """The captcha and bot-check services WIRED names in a page or a script."""
+    low = text.lower()
+    return [name for name, marks in WIRED if any(m in low for m in marks)]
