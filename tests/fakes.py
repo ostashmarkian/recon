@@ -154,6 +154,7 @@ class FakeSite:
         self.in_flight = 0
         self.most_in_flight = 0  # the most requests out at once
         self.posts: list[str] = []  # paths asked with a body
+        self.data: bytes | None = None  # the body of the request being answered
         self.sent: list[tuple[str, str, dict | None]] = []  # (client kind, path, the headers asked with)
         self.session = asyncio.Lock() if lock else None
 
@@ -292,6 +293,7 @@ class FakeClient:
                 return Answer(url, error="RemoteProtocolError: Server disconnected without sending a response.")
             if site.shrink_over is not None and crowd > site.shrink_over:
                 return Answer(url, 200, {"server": "nginx"}, (), PHP_WARNING, 0.01, http=site.http)
+        site.data = data
         a = site.answer(self, url, headers or {})
         a.seconds = asyncio.get_running_loop().time() - began
         if self.cookies and a.cookies:
@@ -328,11 +330,21 @@ class FakeWatcher:
     """watch_in_browser as Chrome would answer: every page fetches a product list from the shop's own API,
     a search service's query and an HTML fragment of product links; or Chrome fails, or is not there."""
 
-    def __init__(self, fail: bool = False, extra: tuple[dict, ...] = (), missing: bool = False):
+    def __init__(
+        self,
+        fail: bool = False,
+        extra: tuple[dict, ...] = (),
+        missing: bool = False,
+        after_click: tuple[dict, ...] = (),
+    ):
         self.fail, self.urls, self.extra, self.missing = fail, [], extra, missing
+        self.after_click = after_click  # what the listing fetches once its next-page control is clicked
+        self.clicked: list[str] = []
 
-    async def __call__(self, urls: list[str]) -> dict:
+    async def __call__(self, urls: list[str], click: str | None = None) -> dict:
         self.urls.extend(urls)
+        if click:
+            self.clicked.append(click)
         if self.missing:
             raise BrowserMissing("Google Chrome is not installed")
         if self.fail:
@@ -381,6 +393,11 @@ class FakeWatcher:
         for call in calls:
             call.setdefault("headers", browser)
         pages = [{"url": u, "status": 200, "title": "Shop", "calls": [dict(c) for c in calls]} for u in urls]
+        for page in pages:
+            if page["url"] == click:
+                more = [{"headers": browser, **c, "after_click": True} for c in self.after_click]
+                page["calls"] += more
+                page["clicked"] = {"control": "a[rel~='next']", "url": f"{click}&page=2"} if more else {"control": None}
         return {"ua": "Chrome", "seconds": 3.2, "pages": pages}
 
 
@@ -517,7 +534,14 @@ class NuxtSite(FakeSite):
     """A Nuxt 3 shop behind Cloudflare, its data on an open JSON API on another host, served as text/html."""
 
     def __init__(
-        self, cdn: bool = False, tree: bool = False, token: bool = False, exact: bool = False, head: str = "", **kw: Any
+        self,
+        cdn: bool = False,
+        tree: bool = False,
+        token: bool = False,
+        exact: bool = False,
+        head: str = "",
+        paged: bool = False,
+        **kw: Any,
     ):
         kw.setdefault("guard", "cloudflare-open")
         kw.setdefault("dns", API_DNS)
@@ -527,6 +551,9 @@ class NuxtSite(FakeSite):
         self.token = token  # the API's search asks for a token recon has not: an error message whatever is sent
         self.exact = exact  # the search finds a part number's one product, not a page of them
         self.head = head  # more HTML in every page's <head>: scripts on other hosts
+        # its search names page and pageSize in its answer and takes them as parameters (500 a page at most); its
+        # total stops at 10,000 and its pages at page 50, the later ones giving page 50 again
+        self.paged = paged
 
     def answer(self, client: FakeClient, url: str, headers: dict) -> Answer:
         h = {"server": "cloudflare", "cf-ray": "8f-WAW", "content-type": "text/html"}
@@ -659,5 +686,10 @@ class NuxtSite(FakeSite):
             }
             if self.exact and asked.get("keyword"):
                 body = {"success": True, "msg": "", "result": {"total": 1, "products": [nuxt_item(4)]}}
+            elif self.paged:
+                at, size = int(asked.get("page", ["1"])[0]), min(int(asked.get("pageSize", ["25"])[0]), 500)
+                start = (min(at, 50) - 1) * size
+                items = [nuxt_item(k) for k in range(start, start + size)]
+                body["result"] = {"pageOfItems": items, "resultTotal": 10_000, "page": at, "pageSize": size}
             return Answer(url, 200, h, ("acw_tc",), json.dumps(body).encode(), 0.01)
         return Answer(url, 404, h, (), b"", 0.01)

@@ -110,6 +110,8 @@ WATCH_SETTLE = 2.0
 WATCH_CALLS = 60
 WATCH_BODY = 2_000_000
 WATCH_SENT = 20_000  # characters of a POST body kept, to ask it again
+WATCH_BODY_WAIT = 10.0  # s for one answer's body: a stream or a long poll never ends
+WATCH_BODIES_WAIT = 60.0  # s for the bodies of one page's calls in all
 REPLAY_MOST = 3  # product lists the pages fetch, asked once more with the plain client let in
 
 
@@ -206,3 +208,16 @@ NONCE = "recon-x7q2"  # in made-up addresses
 
 
 FAR_PAGE = 9999
+
+
+# How far the API's product list goes: asked with a page of LIMIT_SIZE items (or twice its own), and with deeper
+# pages, LIMIT_ASKS requests in all, one at a time
+LIMIT_SIZE = 200
+LIMIT_ASKS = 15
+
+
+# The terms of use: TERMS_PAGES pages the home page links as its terms, and TERMS_QUOTES sentences of each kind
+# quoted from each, TERMS_QUOTE characters at most
+TERMS_PAGES = 2
+TERMS_QUOTES = 3
+TERMS_QUOTE = 240

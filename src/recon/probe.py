@@ -105,11 +105,10 @@ h2 0.21s".
 """
 
 import asyncio
-import html as entities
 import itertools
 import logging
+import math
 import random
-import re
 import time
 import zlib
 from collections.abc import Awaitable, Callable, Sequence
@@ -127,7 +126,7 @@ from .api import (
     bundle_refs,
     chunk_refs,
     failed,
-    fill_for,
+    fills_for,
     helpers_in,
     internal_name,
     lists_to_ask,
@@ -141,7 +140,20 @@ from .api import (
     wanted,
 )
 from .browser import BrowserMissing, open_in_browser, watch_in_browser
-from .calls import as_json, call_record, rank, replay_headers, shape
+from .calls import (
+    as_json,
+    call_record,
+    digest,
+    list_at,
+    paging_of,
+    paging_said,
+    rank,
+    replay_headers,
+    sent_as,
+    shape,
+    walk,
+    with_paging,
+)
 from .classify import LOST, REFUSALS, WIRED, cname_vendor, judge, region_block, title_of, vendors_of, wired_in
 from .clients import Answer, Client, make_client
 from .findings import (
@@ -152,6 +164,7 @@ from .findings import (
     percentile,
     protection,
     protection_level,
+    size_of,
     summary,
     ua_filter,
     way_in,
@@ -169,6 +182,7 @@ from .pages import (
     drawn,
     family,
     freshness,
+    join,
     listing_of,
     listing_page,
     made_up,
@@ -183,6 +197,7 @@ from .robots import Robots
 from .robots import parse as parse_robots
 from .sample import page_record, sample_findings
 from .state import read_state, short
+from .terms import terms_links, terms_said
 
 log = logging.getLogger(__name__)
 
@@ -191,22 +206,6 @@ def looks_like_sitemap(body: bytes) -> bool:
     """A sitemap file: gzip, or XML with <urlset> or <sitemapindex> near its start."""
     start = body[:4000].lower()
     return body[:2] == b"\x1f\x8b" or b"<urlset" in start or b"<sitemapindex" in start
-
-
-# a template's text the page left unrendered: doT's {{! firstPdfUrl}}, Mustache, Jinja, ERB, a JS template literal
-TEMPLATE = re.compile(r"\{\{|\{%|\$\{|<%|%7B%7B", re.I)
-
-
-def join(base: str, href: str) -> str | None:
-    """`href` read against `base`, entities decoded; None for an address Python cannot parse, or a template's
-    text left unrendered (/{{! firstPdfUrl}}), no address at all."""
-    href = entities.unescape(href).strip()
-    if TEMPLATE.search(href):
-        return None
-    try:
-        return urljoin(base, href)
-    except ValueError:
-        return None
 
 
 def same_host(a: str, b: str) -> bool:
@@ -238,7 +237,7 @@ async def fetch_within(
 
 
 # Steps whose refusals keep the burst off; the User-Agent test is left out: refusing bots by name is not a limit
-WATCHED_STEPS = ("sitemaps", "platform", "product", "not_found", "sample", "api")
+WATCHED_STEPS = ("sitemaps", "platform", "product", "not_found", "sample", "terms", "api", "limits")
 
 
 def replayed(record: dict[str, Any], a: Answer, got: dict[str, Any], client: str | None) -> dict[str, Any]:
@@ -254,6 +253,42 @@ def replayed(record: dict[str, Any], a: Answer, got: dict[str, Any], client: str
         "items": got.get("items"),
         "works": works,
     }
+
+
+ACCEPT_JSON = {"Accept": "application/json, text/plain, */*"}  # what an API route is asked with
+
+
+def list_read(a: Answer, path: str | None) -> dict[str, Any]:
+    """A product list's answer as limits() and again() read it: its status and verdict; the items at `path` (the
+    largest list when None), how many and their digest; the total it gives; its message, and whether that says
+    the call failed."""
+    is_json, data = as_json(a.body[: settings.WATCH_BODY])
+    best, _, total = walk(data) if is_json else (None, [], None)
+    path = path or (best[1] if best else None)
+    items = list_at(data, path) if is_json and path else None
+    message = message_of(data) if is_json else None
+    return {
+        "status": a.status,
+        "verdict": judge(a)[0],
+        "path": path,
+        "items": len(items or []),
+        "total": total,
+        "digest": digest(items) if items else None,
+        "message": message,
+        "error": not items and failed(message, a.status),
+    }
+
+
+def gives_rows(got: dict[str, Any]) -> bool:
+    """A page of the list that holds items: let in, and not empty."""
+    return got["verdict"] == "ok" and got["items"] > 0
+
+
+def middle(good: int, bad: int) -> int:
+    """A page between two, for halving: by ratio while one is more than twice the other (a window of 500 rows is
+    found in a few steps among 48,000 pages), then by difference; never either end."""
+    mid = round(math.sqrt(good * bad)) if bad > 2 * good else (good + bad) // 2
+    return min(max(mid, good + 1), bad - 1)
 
 
 def said_of(data: Any) -> str | None:
@@ -286,7 +321,7 @@ class Recon:
         products: int = settings.SAMPLE_PRODUCTS,
         long: float | None = None,
         watch: bool = True,
-        watcher: Callable[[list[str]], Awaitable[dict[str, Any]]] | None = None,
+        watcher: Callable[..., Awaitable[dict[str, Any]]] | None = None,
         resolve: Callable[[str], Awaitable[dict[str, Any]]] = resolve,
     ) -> None:
         if "://" not in url:
@@ -331,6 +366,8 @@ class Recon:
         self.api_answers: dict[tuple[str, str], tuple[Answer, dict[str, Any]]] = {}  # (method, url): answer, shape
         self.api_hosts: dict[str, dict[str, Any]] = {}  # what each API host is: its DNS, what answered its robots.txt
         self.wired: dict[str, list[str]] = {}  # captcha and bot-check services the JS bundles name: {name: [file]}
+        self.lists_found: list[dict[str, Any]] = []  # product lists the pages fetch that a plain client got too
+        self.list_ref: dict[str, Any] | None = None  # the one limits() pages through and again() asks at the end
         self.best: str | None = None
         self.f: Findings = {"url": url, "began": datetime.now().astimezone().isoformat(timespec="seconds")}
 
@@ -396,10 +433,13 @@ class Recon:
                 ("product", self.product),
                 ("not_found", self.not_found),
                 ("sample", self.product_sample),
+                ("terms", self.terms),
                 ("api", self.api),
                 ("watch", self.watch),
+                ("limits", self.limits),
             ):
                 await self.isolated(name, do)
+            self.computed("size", lambda: size_of(f))
             f["refused_elsewhere"] = {step: got for step, got in self.refused.items() if got}
             self.computed(
                 "sources",
@@ -417,6 +457,7 @@ class Recon:
             await self.isolated("session_lock", self.session_lock)
             if self.long_minutes:
                 await self.isolated("long", self.long_session)
+            await self.isolated("again", self.again)
             self.computed("vendors", lambda: vendors_of(self.seen))
             self.computed("wired", self.wired_found)
             self.computed("region_block", lambda: region_block(self.seen))
@@ -1217,10 +1258,19 @@ class Recon:
 
     async def robots_of(self, client: Client, url: str) -> tuple[Answer, str]:
         """Another host's robots.txt, asked once and kept for what is asked of that host after: (the answer,
-        "read" | "not there" | "unreadable"). One not read lets nothing more be asked of the host. Its refusal
-        is that host's, not the site's."""
+        "read" | "not there" | "unreadable"). Its redirects are followed, REDIRECTS at most, as RFC 9309 asks (an
+        http:// link's robots.txt moved to https://), a hop to a host no public DNS holds not taken. One not read
+        lets nothing more be asked of the host. Its refusal is that host's, not the site's."""
         parts = urlsplit(url)
-        a = await self.get(client, f"{parts.scheme}://{parts.netloc}/robots.txt", own=False)
+        at = f"{parts.scheme}://{parts.netloc}/robots.txt"
+        for _ in range(settings.REDIRECTS + 1):
+            a = await self.get(client, at, own=False)
+            if not (a.status and 300 <= a.status < 400 and a.location):
+                break
+            at = urljoin(at, a.location)
+            hop = host_of(at)
+            if hop != host_of(a.url) and not same_host(at, self.home) and (await self.look_up(hop))["dns"] != "public":
+                break
         verdict, host = judge(a)[0], (parts.hostname or "").lower()
         if a.status == 200 and verdict == "ok":
             self.host_robots[host], state = parse_robots(a.text), "read"
@@ -1340,8 +1390,9 @@ class Recon:
         """The list and search routes found, best first, each asked by GET with the plain client let in and no
         cookie or token: on the bases of probe_bases() in turn until one answers other than 404, then on that
         one alone. An answer whose message says what it lacks ("Either cate_id or keyword is required") is asked
-        once more with a value the run has: the product page's part number as its search word, else a listing's
-        category id. API_PROBES requests in all, none more once one gives a product list. Does a plain client get
+        once more with a value the run has: the product page's part number as its search word, and when that gives
+        no product list (its one product), a listing's category id. API_PROBES requests in all, none more once one
+        gives a product list. Does a plain client get
         JSON from the API, whatever its Content-Type says? The best answer, and the others under "others"."""
         candidates = self.probe_bases(bases)
         asked: list[dict[str, Any]] = []
@@ -1367,10 +1418,12 @@ class Recon:
                 if one["status"] not in (None, 404):  # the API answers here: the other routes are asked here alone
                     candidates = [base]
                     break
-            fill = fill_for(got["wants"], self.part_number(), list(self.listings)) if got else None
-            if got and fill and not filled and not done():
+            fills = fills_for(got["wants"], self.part_number(), list(self.listings)) if got else []
+            for fill in [] if filled else fills:  # the search word first; a category when it gave no list
+                if done():
+                    break
                 filled = True
-                url = got["url"] + ("&" if urlsplit(got["url"]).query else "?") + urlencode(fill)
+                url = got["url"] + ("&" if urlsplit(got["url"]).query else "?") + urlencode(fill) if got else ""
                 one = await self.api_ask(client, url, pick["route"])
                 if not one.get("skipped"):
                     asked.append({**one, "filled": fill})
@@ -1400,7 +1453,7 @@ class Recon:
             return {"url": url, "skipped": "it may change the site's state"}
         if not robots.allows(url):
             return {"url": url, "skipped": "robots.txt disallows it"}
-        a = await self.get(client, url, headers={"Accept": "application/json, text/plain, */*"}, own=False)
+        a = await self.get(client, url, headers=dict(ACCEPT_JSON), own=False)
         if same_host(url, self.home):  # another host's answers stay out of what the site has in front
             self.keep(a)
         body = a.body[: settings.WATCH_BODY]
@@ -1423,7 +1476,7 @@ class Recon:
             "message": message,
             "error": error,  # a message that says the call failed, not data
             "wants": wanted(message) if error else [],
-            **{k: got[k] for k in ("kind", "path", "items", "keys", "paging") if k in got},
+            **{k: got[k] for k in ("kind", "path", "items", "keys", "paging", "total") if k in got},
         }
 
     async def watch(self) -> None:
@@ -1449,7 +1502,7 @@ class Recon:
         urls = [self.home, *picked]
         urls = urls[: settings.WATCH_PAGES]
         try:
-            seen = await self.watcher(urls)
+            seen = await self.watcher(urls, click=listing if listing in urls else None)
         except BrowserMissing as e:  # not this machine's: said, and the run goes on
             f["watch"] = {"skipped": str(e)}
             return
@@ -1464,7 +1517,15 @@ class Recon:
             )
             found += records
             calls = [record for record, _ in records]
-            pages.append({"url": page["url"], "status": page.get("status"), "title": page.get("title"), "calls": calls})
+            pages.append(
+                {
+                    "url": page["url"],
+                    "status": page.get("status"),
+                    "title": page.get("title"),
+                    "calls": calls,
+                    **({"clicked": page["clicked"]} if "clicked" in page else {}),
+                }
+            )
         await self.replay(found)
         f["watch"] = {"seconds": seen.get("seconds"), "pages": pages}
         if not self.robots.allows(self.home):
@@ -1475,6 +1536,7 @@ class Recon:
         client let in and no cookie or token: does the API work without the browser? Each record gets a
         "replay" saying so, or why it was not asked."""
         asked: set[tuple[str, str]] = set()  # each endpoint once, over all the pages
+        worked: set[tuple[str, str]] = set()  # the endpoints whose product list a plain client got
         made = 0  # requests made: a call not asked again does not count
         client = None
         try:
@@ -1484,28 +1546,28 @@ class Recon:
                     continue
                 parts = urlsplit(call["url"])
                 key = (call["method"], parts.path)
+                body = call.get("sent") or ""
+                as_asked = {
+                    "method": call["method"],
+                    "url": call["url"],
+                    "sent": body if call["method"] == "POST" else "",
+                    "headers": replay_headers(call.get("headers") or {}),
+                }
+                if key in worked and record["kind"] == "products" and not self.not_asked_again(call):
+                    self.lists_found.append(as_asked)  # another call of an endpoint that works: limits() may page it
                 if key in asked or made >= settings.REPLAY_MOST:
                     continue
                 asked.add(key)
                 done = self.api_answers.get((call["method"], call["url"]))
                 if done:  # asked already, as a route the bundles name: not asked twice
                     record["replay"] = replayed(record, *done, self.best)
+                    if record["replay"]["works"] and record["kind"] == "products":
+                        self.lists_found.append(as_asked)
+                        worked.add(key)
                     continue
-                body = call.get("sent") or ""
-                if call["method"] not in ("GET", "POST") or SKIPPED_PATHS.search(f"{parts.path}?{parts.query}"):
-                    record["replay"] = {"skipped": "it may change the site's state"}
-                    continue
-                if "mutation" in body.lower():
-                    record["replay"] = {"skipped": "a GraphQL mutation"}
-                    continue
-                host = (parts.hostname or "").lower()
-                if host in self.internal_hosts:
-                    record["replay"] = {"skipped": "an internal host"}
-                    continue
-                # an API host's own robots.txt when it was read
-                robots = self.robots if same_host(call["url"], self.home) else self.host_robots.get(host, self.robots)
-                if not robots.allows(call["url"]):
-                    record["replay"] = {"skipped": "robots.txt disallows it"}
+                why = self.not_asked_again(call)
+                if why:
+                    record["replay"] = {"skipped": why}
                     continue
                 if self.best is None:
                     break
@@ -1518,9 +1580,329 @@ class Recon:
                 got = shape(a.body[: settings.WATCH_BODY], a.headers.get("content-type", ""))
                 self.api_answers[(call["method"], call["url"])] = (a, got)
                 record["replay"] = replayed(record, a, got, self.best)
+                if record["replay"]["works"] and record["kind"] == "products":
+                    self.lists_found.append(as_asked)
+                    worked.add(key)
         finally:
             if client:
                 await client.aclose()
+
+    def not_asked_again(self, call: dict[str, Any]) -> str | None:
+        """Why a call a page made is not asked again without the browser, or None: a method or an address that may
+        change the site's state, a GraphQL mutation, an internal host, or robots.txt (an API host's own when it
+        was read)."""
+        parts = urlsplit(call["url"])
+        if call["method"] not in ("GET", "POST") or SKIPPED_PATHS.search(f"{parts.path}?{parts.query}"):
+            return "it may change the site's state"
+        if "mutation" in (call.get("sent") or "").lower():
+            return "a GraphQL mutation"
+        host = (parts.hostname or "").lower()
+        if host in self.internal_hosts:
+            return "an internal host"
+        robots = self.robots if same_host(call["url"], self.home) else self.host_robots.get(host, self.robots)
+        return None if robots.allows(call["url"]) else "robots.txt disallows it"
+
+    def list_calls(self) -> list[dict[str, Any]]:
+        """The product lists a plain client got from the API, as calls to ask again: those the pages fetch first (a
+        POST among them, and the other calls of an endpoint that works), then the one the API step asked."""
+        calls = list(self.lists_found)
+        probe = (self.f.get("api") or {}).get("probe") or {}
+        if probe.get("kind") == "products" and probe.get("verdict") == "ok":
+            calls.append({"method": "GET", "url": probe["url"], "sent": "", "headers": dict(ACCEPT_JSON)})
+        kept: dict[tuple[str, str], dict[str, Any]] = {}
+        for c in calls:
+            kept.setdefault((c["method"], c["url"]), c)
+        return list(kept.values())
+
+    async def limits(self) -> None:
+        """How far the API's product list goes for a scraper. The first list a plain client got that names a page
+        (or an offset), else a page size (list_calls()), is asked with a page of LIMIT_SIZE (or twice its own): how
+        many items a page holds at most; and with deeper pages, the last its total names first: do they give rows
+        to the end, stop (no rows, an error), or give one page again (the page before the last the same: a clamp;
+        the first page's rows: a wrap)? Where they stop or repeat, the pages between are halved, by ratio while far
+        apart, to the last page that gives its own rows. A call that sends neither a page nor a size, by GET or a
+        form, is tried with those its answer names ({"page": 1, "pageSize": 25}), each kept only when sending it
+        changes the answer: the next page other rows, half the size half the items. LIMIT_ASKS requests at most,
+        one at a time; none past a refusal, none robots.txt disallows."""
+        f = self.f
+        calls = self.list_calls()
+        self.list_ref = calls[0] if calls else None
+        if not calls:
+            if self.best and (f.get("api") or f.get("watch")):
+                f["limits"] = {"skipped": "no product list a plain client got from the API"}
+            return
+        if self.best is None:
+            return
+        pages = [c for c in calls if {"page", "offset"} & set(paging_of(c))]  # one that pages, before one only sized
+        ref = next(iter(pages), None) or next((c for c in calls if paging_of(c)), None) or calls[0]
+        self.list_ref = ref
+        keys = paging_of(ref)
+        names = {name: where[-1] for name, (where, _) in keys.items()}
+        result: dict[str, Any] = {
+            "method": ref["method"],
+            "url": ref["url"],
+            "keys": {name: ".".join(where) for name, (where, _) in keys.items()},
+            "asks": [],
+        }
+        f["limits"] = result
+        client = self.make(self.best, ua=self.ua_for(self.best))
+        first: dict[str, Any] = {"path": None}
+
+        async def ask(values: dict[str, int]) -> dict[str, Any] | None:
+            """The list with these paging values; None when the step has stopped or spent its requests."""
+            if result.get("stopped") or len(result["asks"]) >= settings.LIMIT_ASKS:
+                return None
+            call = with_paging(ref, {keys[name][0]: n for name, n in values.items()})
+            host = host_of(call["url"])
+            robots = self.robots if same_host(call["url"], self.home) else self.host_robots.get(host, self.robots)
+            if not robots.allows(call["url"]):
+                result["stopped"] = "robots.txt disallows the address"
+                return None
+            data = call["sent"].encode() if call["method"] == "POST" else None
+            own = same_host(call["url"], self.home)  # the site's own pages: a refusal there keeps the burst off
+            answer = await self.get(client, call["url"], headers=call["headers"], data=data, own=own)
+            if not values:  # the call as the page made it: its answer kept, for again() too
+                self.api_answers[(ref["method"], ref["url"])] = (answer, shape(answer.body[: settings.WATCH_BODY], ""))
+            got = {"asked": {names[k]: n for k, n in values.items()}, **list_read(answer, first["path"])}
+            result["asks"].append(got)
+            if got["verdict"] in REFUSALS:
+                result["stopped"] = f"refused: {answer.status or '-'} {got['verdict']}"
+            return got
+
+        try:
+            done = self.api_answers.get((ref["method"], ref["url"]))
+            if done is None:  # another call of an endpoint that works, not asked yet: asked as the page made it
+                if await ask({}) is None:
+                    return
+                done = self.api_answers[(ref["method"], ref["url"])]
+            first = list_read(done[0], None)
+            if not first["items"]:
+                result["skipped"] = "its first answer holds no items to page through"
+                return
+            checked = None  # the next page, when its parameter was named by the answer and checked
+            if not keys:
+                kept, checked = await self.paging_from_answer(ask, ref, done[0], first, keys, names, result)
+                if not kept:
+                    return
+            result["keys"] = {name: ".".join(where) for name, (where, _) in keys.items()}
+            result["first"] = {k: first[k] for k in ("items", "total", "path")}
+            result["first"]["sent"] = {names[k]: v for k, (_, v) in keys.items()}
+            if "size" in keys:
+                own = keys["size"][1]
+                want = max(settings.LIMIT_SIZE, own * 2)
+                got = await ask({"size": want})
+                if got:
+                    result["size"] = {"own": own, "asked": want, "got": got["items"], "total": got["total"]}
+                    result["size"].update({k: got[k] for k in ("status", "verdict", "message", "error")})
+            pager = "page" if "page" in keys else "offset" if "offset" in keys else None
+            per, total = first["items"], first["total"]
+            if pager and total and total > per:
+                checked = checked if pager == "page" else None
+                result["pages"] = await self.page_through(ask, keys, pager, first, per, total, checked)
+        finally:
+            await client.aclose()
+
+    async def paging_from_answer(
+        self,
+        ask: Callable[[dict[str, int]], Awaitable[dict[str, Any] | None]],
+        call: dict[str, Any],
+        answer: Answer,
+        first: dict[str, Any],
+        keys: dict[str, tuple[tuple[str, ...], int]],
+        names: dict[str, str],
+        result: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """For limits(), a call that sends no page and no size: the page and the size its answer names, into `keys`
+        and `names`, each kept only when sending it changes the answer. The next page must give other rows, and
+        half the size half as many items (when the page held more than one). Whether any was kept, and the next
+        page's answer when it was asked."""
+        sendable = sent_as(call) in ("query", "form")  # a JSON body takes no key it does not send
+        said = paging_said(as_json(answer.body[: settings.WATCH_BODY])[1]) if sendable else {}
+        if not said:
+            result["skipped"] = "the product list's call names no page or page size, nor does its answer"
+            return False, None
+        keys.update(said)
+        names.update({name: where[-1] for name, (where, _) in said.items()})
+        kept = []
+        nxt = None
+        if "page" in said:
+            nxt = await ask({"page": said["page"][1] + 1})
+            if nxt and gives_rows(nxt) and nxt["digest"] != first["digest"]:
+                kept.append("page")
+        if "size" in said and said["size"][1] > 1:
+            half = said["size"][1] // 2
+            got = await ask({"size": half})
+            if got and got["items"] == min(half, first["items"]) < first["items"]:
+                kept.append("size")
+        for name in [k for k in said if k not in kept]:
+            del keys[name], names[name]
+        result["from_answer"] = {name: names[name] for name in kept}
+        if not kept:
+            result["skipped"] = (
+                "the product list's call sends no page or page size; its answer names "
+                + ", ".join(f"`{where[-1]}`" for where, _ in said.values())
+                + ", but sent, they did not change the page"
+            )
+        return bool(kept), nxt if "page" in kept else None
+
+    async def page_through(
+        self,
+        ask: Callable[[dict[str, int]], Awaitable[dict[str, Any] | None]],
+        keys: dict[str, tuple[tuple[str, ...], int]],
+        pager: str,
+        first: dict[str, Any],
+        per: int,
+        total: int,
+        next_page: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """How deep the pages go, for limits(). Pages are counted from 1 here: k is the k-th page of `per` items;
+        value(k) is what the call sends for it, a page number (from 0 when the call sent page 0, else from 1) or
+        an offset."""
+        sent = keys[pager][1]
+        base = (0 if sent == 0 else 1) if pager == "page" else 0
+        k0 = sent - base + 1 if pager == "page" else sent // per + 1
+        last = -(-total // per)
+
+        def value(k: int) -> int:
+            return base + k - 1 if pager == "page" else (k - 1) * per
+
+        out: dict[str, Any] = {"by": pager, "per": per, "first_page": base if pager == "page" else None}
+        if last <= k0:
+            return {**out, "kind": "none deeper"}
+        seen: dict[int, dict[str, Any]] = {k0: first}
+        if next_page is not None:  # asked already, when the answer named the page
+            seen[k0 + 1] = next_page
+
+        async def at(k: int) -> dict[str, Any] | None:
+            """Page k as asked; None when it was not asked, or refused: a refusal says nothing of the pages."""
+            if k not in seen:
+                got = await ask({pager: value(k)})
+                if got is None or got["verdict"] in REFUSALS:
+                    return None
+                seen[k] = got
+            return seen[k]
+
+        async def boundary(good: int, bad: int, ok: Callable[[dict[str, Any]], bool]) -> tuple[int, int]:
+            """The last page that is `ok` between two, the pages between halved while requests are left."""
+            while bad - good > 1:
+                mid = middle(good, bad)
+                got = await at(mid)
+                if got is None:
+                    break
+                good, bad = (mid, bad) if ok(got) else (good, mid)
+            return good, bad
+
+        nxt = await at(k0 + 1)  # does sending the page change it at all?
+        if nxt is None:
+            return {**out, "kind": "not asked"}
+        if gives_rows(nxt) and nxt["digest"] == first["digest"]:
+            return {**out, "kind": "ignored", "next": value(k0 + 1)}
+        end = await at(last)
+        if end is None:
+            return {**out, "kind": "not asked"}
+        out["last"] = value(last)
+        if gives_rows(end) and end["digest"] == first["digest"]:
+            return {**out, "kind": "wraps", "like": value(k0)}
+        if gives_rows(end):  # the page before the last gives other rows, or the same: past a clamp, all pages do
+            m = await at(last - 1) if k0 < last - 1 else end
+            if m is None:
+                return {**out, "kind": "end unchecked"}
+            if m is not end and gives_rows(m) and m["digest"] == end["digest"]:
+                good, bad = await boundary(k0, last - 1, lambda x: gives_rows(x) and x["digest"] != end["digest"])
+                return {**out, "kind": "repeats", "good": value(good), "bad": value(bad), "rows": bad * per}
+            return {**out, "kind": "to the end"}
+        good, bad = await boundary(k0, last, gives_rows)
+        stop = seen.get(bad) or end
+        return {
+            **out,
+            "kind": "stops",
+            "good": value(good),
+            "bad": value(bad),
+            "rows": good * per,
+            "then": {k: stop[k] for k in ("status", "verdict", "items", "total", "message")},
+        }
+
+    async def again(self) -> None:
+        """The API's product list asked once more at the end of the run, as it was asked first: the same items, or
+        none - a 200 with an empty list, how some sites turn away a client that asked too much, or a refusal."""
+        ref = self.list_ref
+        done = self.api_answers.get((ref["method"], ref["url"])) if ref else None
+        if ref is None or done is None or self.best is None:
+            return
+        a0 = done[0]
+        first = list_read(a0, None)
+        if not first["items"]:
+            return
+        client = self.make(self.best, ua=self.ua_for(self.best))
+        try:
+            data = ref["sent"].encode() if ref["method"] == "POST" else None
+            after = self.requests
+            a = await self.get(client, ref["url"], headers=ref["headers"], data=data, own=False)
+        finally:
+            await client.aclose()
+        now = list_read(a, first["path"])
+        silent = now["verdict"] == "ok" and not now["items"]
+        refused = now["verdict"] in REFUSALS
+        new = {}
+        if silent or refused:  # what the answer carries now that it did not: a marker of the refusal, often
+            new = {k: short(v, 80) for k, v in a.headers.items() if k not in a0.headers and k not in ("set-cookie",)}
+        self.f["again"] = {
+            "method": ref["method"],
+            "url": ref["url"],
+            "after": after,
+            "first": {k: first[k] for k in ("items", "total")},
+            "now": {k: now[k] for k in ("status", "verdict", "items", "total", "message")},
+            "silent": silent,
+            "refused": refused,
+            "headers": new,
+        }
+
+    async def terms(self) -> None:
+        """The site's terms of use: the pages the home page links as its terms, TERMS_PAGES at most, on the site or
+        another host of its domain, where robots.txt allows; and what they say of robots, crawlers and scraping
+        and of a pace in requests a second, quoted as written. The home page's own words are read too."""
+        home = self.home_answer
+        if home is None or judge(home)[0] != "ok":
+            return
+        result: dict[str, Any] = {"home": terms_said(home.head), "pages": []}
+        self.f["terms"] = result
+        links = terms_links(home.head, self.home)
+        links = [u for u in links if same_host(u, self.home) or same_domain(host_of(u), self.host)]
+        result["links"] = len(links)
+        if not links:
+            return
+        client = self.make(self.best or "curl-chrome", ua=self.ua_for(self.best) if self.best else None)
+        try:
+            for url in links[: settings.TERMS_PAGES]:
+                a: Answer | None = None
+                page: dict[str, Any] = {"url": url}
+                for _ in range(settings.REDIRECTS + 1):  # its redirects on the site's domain, each where allowed
+                    host = host_of(url)
+                    if not same_host(url, self.home) and (await self.look_up(host))["dns"] != "public":
+                        page["skipped"] = "its host has no public DNS: never asked"
+                        break
+                    if not same_host(url, self.home) and host not in self.host_robots:
+                        await self.robots_of(client, url)
+                    robots = self.robots if same_host(url, self.home) else self.host_robots[host]
+                    if not robots.allows(url):
+                        page["skipped"] = "robots.txt disallows it"
+                        break
+                    a = await self.get(client, url, own=same_host(url, self.home))
+                    if same_host(url, self.home):
+                        self.keep(a)
+                    hop = join(url, a.location) if a.status and 300 <= a.status < 400 and a.location else None
+                    if not hop or not (same_host(hop, self.home) or same_domain(host_of(hop), self.host)):
+                        break
+                    url = hop
+                if a is None or page.get("skipped"):
+                    result["pages"].append(page)
+                    continue
+                page = {"url": url, "status": a.status, "verdict": judge(a)[0]}
+                if judge(a)[0] == "ok":
+                    page.update(terms_said(a.head))
+                result["pages"].append(page)
+        finally:
+            await client.aclose()
 
     async def long_session(self) -> None:
         """One cookie jar, the home page and then pages robots.txt allows, one request every LONG_PAUSE s

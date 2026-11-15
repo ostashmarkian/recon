@@ -86,6 +86,10 @@ product page read, each not-found probe. See the full report:
   hCaptcha, Turnstile, Arkose, FingerprintJS, a webdriver check): a faster or
   longer run may meet them. Says when the site refuses the country the run
   comes from (Alibaba Cloud's `denied by region_block`).
+- Reads the terms of use the home page links (two pages at most, where
+  robots.txt allows) and quotes, as written, what they say of a pace ("more
+  than 2 requests per second", `每秒超过 2 次请求`) and of robots, crawlers and
+  scraping. It quotes; it does not judge.
 
 **Pace**
 - Session lock test: is the site slower with a cookie jar than without one?
@@ -130,19 +134,38 @@ product page read, each not-found probe. See the full report:
   its Content-Type? An answer that says what it lacks (`Either cate_id or
   keyword is required`) is said to be an error message, and asked once more
   with a value the run has: the product page's part number as its search
-  word, else a listing's category id.
+  word, and when that gives its one product rather than a list, a listing's
+  category id.
 - Where patchright and Chrome are installed (`--no-watch` skips it), opens the
   home page, the product page and a listing in Chrome and lists the XHR and
   fetch calls they make. Each answer is read for a scraper: a product list
   (where it sits, how many items, which of ids, names, prices and stock they
-  carry), its paging keys, an HTML fragment of product links, a GraphQL
-  operation. It sees what a page asks for as it opens and scrolls: a call made
-  only on a click, such as a next-page button, does not show.
+  carry), its paging keys and its total, an HTML fragment of product links, a
+  GraphQL operation. On the listing, its next-page control is clicked once,
+  and the calls after the click are marked: a list paged by a script shows
+  only then. An answer that never ends (a stream, a long poll) is waited for
+  10 s and named, so a page that never lets go cannot hold the run.
 - Each product list the site's own API answered is then asked once more with
   the plain client the site lets in, with no cookie and no token. The report
   says whether the API works without the browser, and if not, what the page
   sent beyond a browser's usual headers: `authorization`, `x-csrf-token`, its
   cookies. It gives their names, never their values.
+- How far that list goes for a scraper (**API limits**): asked with a page of
+  200 items, how many a page holds at most (a `page_size` of 100 cut to 50);
+  the next page, which must give other rows (else the page parameter changes
+  nothing); then the last page its total names, and where that gives no rows, an error,
+  or one page again, the pages between are halved to the last that gives its
+  own rows: "page=10 gives items, page=11 no items: about 500 rows reachable
+  by paging of the 2,431,000 its total names". The page and its size are found
+  in a query, a form body or a JSON body; a call that sends neither is tried
+  with those its answer names (`"page": 1, "pageSize": 25`), each kept only
+  when sending it changes the page. 15 requests at most, one at a time.
+- The same list asked once more at the end of the run (**Asked again**): an
+  empty list with a 200 where it gave items at first is a silent refusal,
+  with the headers new in its answer (`x-tag-upstream: empty_header_tag`). A
+  scraper must check a page's count, not only its status.
+- **Size:** the largest count any answer gave (a list's total, a count in the
+  page's state), and which call gave it: the site holds at least as many.
 
 **Data quality**
 - Reads schema.org Product data (JSON-LD and microdata), product meta tags, the
@@ -210,10 +233,13 @@ flowchart LR
     F --> G[product page]
     G --> H[not-found pages]
     H --> S[sample of 10<br/>product pages]
-    S --> P[its own API:<br/>config, DNS,<br/>bundles, state]
+    S --> T[terms of use]
+    T --> P[its own API:<br/>config, DNS,<br/>bundles, state]
     P --> W[3 pages<br/>in Chrome]
-    W --> I[session lock]
-    I --> J{protected?}
+    W --> M[API limits:<br/>page size,<br/>page depth]
+    M --> I[session lock]
+    I --> R[the list<br/>asked again]
+    R --> J{protected?}
     J -- no --> K[burst]
     J -- yes --> L[report]
     K --> L
@@ -224,7 +250,7 @@ The verdict opens with a protection level, from what the run saw:
 | Level | Meaning |
 |---|---|
 | 0 | nothing in front, no client or User-Agent turned away |
-| 1 | a service in front (a CDN, an anti-bot service), no client turned away; or a rate limit (a 429, or refusals with several requests at a time) |
+| 1 | a service in front (a CDN, an anti-bot service), no client turned away; or a rate limit (a 429, or refusals with several requests at a time); or the API's list empty when asked again at the end (a silent refusal) |
 | 2 | a filter by name: bot and tool User-Agents refused, any client with a browser User-Agent let in |
 | 3 | a filter by fingerprint: some clients turned away even with a browser User-Agent (TLS, HTTP/2), others let in |
 | 4 | a bot manager in front: every client let in now, but it scores each one over its session, so a long run can be turned away |
@@ -275,6 +301,7 @@ The code is a package in `src/recon/`:
 | `calls` | what the pages' own XHR and fetch calls answer: product lists, paging, fragments, JSON by its body |
 | `api` | the site's own API without a browser: API bases in runtime configs, their hosts, routes in JS bundles |
 | `state` | a page's state (Nuxt's `__NUXT_DATA__`, Next.js's `__NEXT_DATA__`): its product lists and its product |
+| `terms` | the terms of use: the links to them, and their sentences on a pace and on robots and scraping |
 | `browser`, `notes`, `cli` | Chrome via patchright, the notes folder, the command |
 
 ## Responsible use
@@ -289,7 +316,8 @@ or public sites whose terms permit it. It is careful by default:
 - robots.txt is read as RFC 9309 asks, redirects followed. If it cannot be read
   (a server error, a refusal, no answer), every page counts as disallowed.
   Sitemaps, platform APIs and the not-found probes are asked only where it
-  allows, and so are the pages of the session test, the sample and the burst;
+  allows, and so are the pages of the session test, the sample, the burst and
+  the terms of use (two pages at most);
 - links that look like they change the site's state are left out: a cart,
   checkout or account route (in several languages), `?add-to-cart=`,
   `?remove_item=`, `action=add`. It is a list of patterns, so a shop with its
@@ -317,7 +345,16 @@ or public sites whose terms permit it. It is careful by default:
   past a site that says no. The page you give is one of them even when
   robots.txt disallows it (recon reads it anyway, as you asked), and the report
   says so with the rule; the pages recon picks itself are only those robots.txt
-  allows;
+  allows. On the listing it clicks one next-page control, never one that leads
+  to a cart or an account;
+- the API limits ask the product list a plain client already got, 15 times at
+  most, one request at a time and paced as every other, only where robots.txt
+  allows, and only a call that passes the replay's checks (no route that may
+  change the site's state, no GraphQL mutation, no internal host); a refusal
+  ends them, and a refusal of the site's own pages there or in the terms step
+  keeps the burst off. At the end of the run the same list is asked once more;
+- the terms of use on another host of the domain are asked only after its
+  host is looked up in DNS and its robots.txt read, redirects followed;
 - `--long` asks one page every 5-10 s (or the Crawl-delay), slower than the
   rest of the run, so it runs behind protection too; it stops at the first
   refusal. At an answer lost it asks a neutral host
@@ -342,14 +379,21 @@ site that says no.
 - Pages drawn by JavaScript are flagged; their data is read only where it sits
   in a state recon knows (Nuxt 3, Next.js, `window.__INITIAL_STATE__`).
 - API routes are read from the bundles' text: a route built from parts at run
-  time, or one loaded only after a click, does not show.
+  time does not show, and in Chrome only what loading, one scroll and one
+  click on a listing's next page fetch.
+- The API limits read one list, often one category, with the parameters the
+  page sent: another filter can have another window. A page number counted
+  from 0 or 1 is taken from the call (0 when it sent 0), so the rows reachable
+  are "about".
+- The terms are found by their link's words in the home page's HTML: a footer
+  drawn by JavaScript, or a link with other words, is not found.
 
 ## Development
 
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 275 tests, offline, ~160 s
+pytest                                       # 332 tests, offline, ~4 min
 ruff check src tests && ruff format --check src tests
 mypy
 ```
@@ -380,10 +424,8 @@ add a platform, an anti-bot service or a language.
 - signatures of platforms, anti-bot services and search services as data
   files, so they can be added without touching code
 - `--render`: read the data of pages drawn by JavaScript through the browser
-- the watch deeper: follow a product list's paging call once, to show which
-  parameter pages and how far
-- listing checks: page-size limits, stable sorting, catalogue size from
-  several sources
+- listing checks: stable sorting across pages, catalogue size summed over
+  categories
 - `--proxy`, and a HAR export of every request
 - a release on PyPI
 

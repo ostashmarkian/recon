@@ -285,9 +285,17 @@ def fill_for(wants: list[str], part_number: str | None, listings: list[str]) -> 
     """A value the run has for a parameter a call lacks: the product page's part number for a search word, read
     from its data; else, for a category's id, the last number in the address of a category page found to list
     products (/category/eeprom/160112.html), which is a guess. None for none."""
+    return next(iter(fills_for(wants, part_number, listings)), None)
+
+
+def fills_for(wants: list[str], part_number: str | None, listings: list[str]) -> list[dict[str, str]]:
+    """The values the run has for what a call lacks, best first: a search word (the part number, a fact), then a
+    category's id (fill_for()). A part number's search can give its one product, a category a list."""
+    fills = []
     for name in wants:
         if KEYWORD_PARAM.match(name) and part_number:
-            return {name: part_number}
+            fills.append({name: part_number})
+            break
     category = None
     for url in listings:
         path = urlsplit(url).path
@@ -297,8 +305,9 @@ def fill_for(wants: list[str], part_number: str | None, listings: list[str]) -> 
             break
     for name in wants:
         if CATEGORY_PARAM.match(name) and category:
-            return {name: category}
-    return None
+            fills.append({name: category})
+            break
+    return fills
 
 
 def lists_to_ask(routes: list[dict[str, str]]) -> list[dict[str, str]]:

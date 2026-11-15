@@ -65,6 +65,8 @@ def what_call(c: dict[str, Any]) -> str:
         said = f"an HTML fragment, {c['links']} links, {c['product_links']} to products"
     elif c["kind"] == "data":
         said = "data, no list"
+    elif c.get("unfinished"):
+        said = f"an answer still open after {settings.WATCH_BODY_WAIT:g} s (a stream or a long poll), not read"
     else:
         said = f"{c['type'] or 'no type'}"
     if c.get("json_as"):
@@ -100,8 +102,17 @@ def watch_line(w: dict[str, Any]) -> str:
     ]
     lead = "; ".join(f"{c['method']} {short_url(c['url'])}: {what_call(c)}" for c in best[:2])
     given = " (the page given among them, though robots.txt disallows it)" if w.get("given_disallowed") else ""
-    return f"{len(calls)} calls on {len(w['pages'])} pages{given}" + (
-        f"; {lead}" if lead else "; none of them a product list"
+    clicked = next((p["clicked"] for p in w.get("pages") or [] if p.get("clicked")), None)
+    after = [c for c in calls if c.get("after_click")]
+    click = ""
+    if clicked and clicked.get("control"):
+        click = f"; the listing's next page clicked ({clicked['control']}), {len(after)} calls after it"
+    elif clicked:
+        click = "; no next-page control found on the listing to click"
+    return (
+        f"{len(calls)} calls on {len(w['pages'])} pages{given}"
+        + (f"; {lead}" if lead else "; none of them a product list")
+        + click
     )
 
 
@@ -150,6 +161,8 @@ def routes_line(api: dict[str, Any]) -> str:
     said = f"{len(routes)} API routes in the pages' scripts and {b.get('read', 0)} JS bundles read"
     if b.get("named", 0) > b.get("read", 0):
         said += f" of {b['named']} named"
+    if b.get("disallowed"):
+        said += f" ({b['disallowed']} disallowed by robots.txt)"
     if b.get("hosts"):
         said += f" (from {', '.join(b['hosts'])} too)"
     if b.get("internal"):
@@ -188,6 +201,135 @@ def probe_line(probe: dict[str, Any]) -> str:
     if filled:
         who += "; " + ", ".join(f"`{k}` filled in with {v}" for k, v in filled.items()) + ", which the run had"
     return f"a plain client ({who}) got from GET {probe['url']}: {got}, {what}"
+
+
+def where_said(url: str) -> str:
+    """A call's host and path, no query: "pc-api.shop.com/pcsearch/get-search-result"."""
+    parts = urlsplit(url)
+    return f"{parts.hostname or ''}{parts.path}"
+
+
+def got_said(got: dict[str, Any]) -> str:
+    """What one ask of a list gave: "50 items", "none (its total 0)", "an error message: ...", "429 limited"."""
+    if got.get("verdict") != "ok":
+        return f"{got.get('status') or '-'} {got.get('verdict')}"
+    if got.get("error"):
+        return f"an error message: {got.get('message')}"
+    if not got.get("items"):
+        return "no items" + (f" (its total {got['total']:,})" if got.get("total") is not None else "")
+    return f"{got['items']} items"
+
+
+def limits_line(lim: dict[str, Any]) -> str:
+    """The verdict's line on how far the API's product list goes: how many a page holds, how deep the pages go."""
+    if lim.get("skipped") or "first" not in lim:
+        return f"not measured ({lim.get('skipped') or lim.get('stopped') or 'the list did not answer'})"
+    first = lim["first"]
+    sent = ", ".join(f"{k}={v}" for k, v in first["sent"].items())
+    said = [
+        f"{lim['method']} `{where_said(lim['url'])}` ({sent}: {first['items']} items"
+        + (f", its total {first['total']:,}" if first.get("total") is not None else "")
+        + ")"
+    ]
+    keys = {name: where.split(".")[-1] for name, where in lim["keys"].items()}
+    if lim.get("from_answer"):
+        named = ", ".join(f"`{k}`" for k in lim["from_answer"].values())
+        said.append(f"{named} named by its answer, not sent by the call: sent, they change the page")
+    size = lim.get("size")
+    if size:
+        asked = f"{keys['size']}={size['asked']}"
+        if size["verdict"] != "ok" or size.get("error"):
+            said.append(f"{asked} gave {got_said({**size, 'items': size['got']})}")
+        elif size["total"] is not None and size["got"] >= size["total"]:
+            said.append(f"{asked} gave all {size['got']}")
+        elif size["got"] < size["asked"]:
+            said.append(f"{asked} gave {size['got']}: a page holds {size['got']} at most")
+        else:
+            said.append(f"{asked} gave {size['got']}: no cap seen up to it")
+    pages = lim.get("pages") or {}
+    key = keys.get(pages.get("by", ""), "")
+    counting = f", counting {key}={pages['first_page']} as the first" if pages.get("first_page") is not None else ""
+    total = first.get("total") or 0
+    apart = bool(pages.get("bad")) and pages["bad"] - pages["good"] > (1 if pages["by"] == "page" else pages["per"])
+    if pages.get("kind") == "stops":
+        then = got_said(pages["then"])
+        said.append(
+            f"{key}={pages['good']} gives items, {key}={pages['bad']} {then}: about {pages['rows']:,} rows"
+            f" reachable by paging of the {total:,} its total names{counting}"
+            + (" (the pages between not asked)" if apart else "")
+        )
+    elif pages.get("kind") == "repeats":
+        said.append(
+            f"{'by' if apart else 'from'} {key}={pages['bad']} on, the pages give the same rows as"
+            f" {key}={pages['last']} (a clamp): about {pages['rows']:,} rows reachable by paging of the {total:,} its"
+            f" total names{counting}" + (" (the pages between not asked)" if apart else "")
+        )
+    elif pages.get("kind") == "wraps":
+        said.append(
+            f"{key}={pages['last']}, the last its total names, gives the rows of {key}={pages['like']} (a wrap)"
+        )
+    elif pages.get("kind") == "to the end":
+        said.append(f"{key}={pages['last']}, the last its total names, gives items: the pages go to the end")
+    elif pages.get("kind") == "end unchecked":
+        said.append(
+            f"{key}={pages['last']}, the last its total names, gives items; the page before it was not asked, so a"
+            " clamp is not ruled out"
+        )
+    elif pages.get("kind") == "ignored":
+        said.append(f"{key}={pages['next']} gives the same rows as the first page: sent, {key} changes nothing")
+    if lim.get("stopped"):
+        said.append(f"stopped: {lim['stopped']}")
+    return "; ".join(said) + f" ({len(lim['asks'])} requests, one at a time)"
+
+
+def again_line(again: dict[str, Any]) -> str:
+    """What the API's product list gave when asked again at the end of the run."""
+    first, now = again["first"], again["now"]
+    call = f"{again['method']} `{where_said(again['url'])}`"
+    head = f"asked again at the end of the run, after {again['after']} requests, {call}"
+    if again["silent"]:
+        said = f"{head} gave no items with a {now['status']} (at first {first['items']}): a silent refusal"
+    elif again["refused"]:
+        said = f"{head} was refused: {now['status'] or '-'} {now['verdict']}"
+    else:
+        return f"{head}: {got_said(now)} (at first {first['items']})"
+    headers = again.get("headers") or {}
+    if headers:
+        said += "; new in its answer: " + ", ".join(f"`{k}: {v}`" for k, v in list(headers.items())[:6])
+    return said + ". A scraper must check a page's count, not only its status"
+
+
+def terms_line(t: dict[str, Any]) -> str:
+    """The verdict's line on the terms of use: what they say of a pace and of robots and scraping, a quote each."""
+    said = []
+    for p in t.get("pages") or []:
+        if p.get("skipped") or p.get("verdict") != "ok":
+            why = p.get("skipped") or f"{p.get('status') or '-'} {p.get('verdict')}"
+            said.append(f"{short_url(p['url'])}: not read ({why})")
+            continue
+        bits = []
+        if p["rate"]:
+            bits.append(f"a pace, “{p['rate'][0]}”")
+        if p["bots_count"]:
+            bits.append(f"robots, crawlers or scraping in {p['bots_count']} sentence(s), “{p['bots'][0]}”")
+        said.append(f"{short_url(p['url'])}: " + ("; ".join(bits) or "no word of a pace, robots or scraping"))
+    home = t.get("home") or {}
+    if home.get("rate"):
+        said.append(f"the home page itself names a pace, “{home['rate'][0]}”")
+    if not said:
+        return "no link to terms of use on the home page" + (
+            f"; the home page names robots, crawlers or scraping in {home['bots_count']} sentence(s)"
+            if home.get("bots_count")
+            else ""
+        )
+    return "; ".join(said) + ". Quoted as written"
+
+
+def size_line(size: dict[str, Any]) -> str:
+    return (
+        f"{size['total']:,}, the largest count an answer gave ({size['where'][:160]}): a count of what that call"
+        " asked for, so the site holds at least as many"
+    )
 
 
 def state_line(api: dict[str, Any]) -> str | None:
@@ -391,6 +533,45 @@ def api_section(api: dict[str, Any]) -> list[str]:
     return out
 
 
+def limits_section(lim: dict[str, Any]) -> list[str]:
+    """Each ask of the API's product list, with what it gave."""
+    if not lim.get("asks"):
+        return []
+    out = [
+        f"## API limits, {lim['method']} {where_said(lim['url'])}",
+        "",
+        "| asked | gave | its total |",
+        "|---|---|---|",
+    ]
+    for got in lim["asks"]:
+        asked = ", ".join(f"{k}={v}" for k, v in got["asked"].items()) or "as the page asked it"
+        total = f"{got['total']:,}" if got.get("total") is not None else "-"
+        out.append(f"| {asked} | {got_said(got)} | {total} |")
+    return [*out, ""]
+
+
+def terms_section(t: dict[str, Any]) -> list[str]:
+    """The terms' sentences on a pace and on robots, crawlers and scraping, as written."""
+    pages = [p for p in t.get("pages") or [] if p.get("verdict") == "ok"]
+    home = t.get("home") or {}
+    if home.get("rate") or home.get("bots"):
+        pages.append({"url": "the home page", **home})
+    if not any(p["rate"] or p["bots"] for p in pages):
+        return []
+    out = ["## Terms of use, as written", ""]
+    for p in pages:
+        if not (p["rate"] or p["bots"]):
+            continue
+        out.append(f"{p['url']}:")
+        out.append("")
+        out += [f"- a pace: {q}" for q in p["rate"]]
+        out += [f"- robots, crawlers or scraping: {q}" for q in p["bots"]]
+        more = p["bots_count"] - len(p["bots"]) + p["rate_count"] - len(p["rate"])
+        out += [f"- and {more} more such sentence(s)"] if more > 0 else []
+        out.append("")
+    return out
+
+
 def report(f: Findings) -> str:
     host = urlsplit(f["home"]).netloc
     out = [f"# recon: {host}", "", f"{f['began']}, {f['requests']} requests, {f['seconds']} s. Home: {f['home']}", ""]
@@ -435,7 +616,15 @@ def report(f: Findings) -> str:
             + "; ".join(f"{name} ({', '.join(where[:3])})" for name, where in f["wired"].items())
             + ". The pages load them whether or not they fire: a faster or longer run may meet them"
         )
+    if f.get("terms"):
+        out.append(f"- **Terms:** {terms_line(f['terms'])}")
     out += api_lines(f)
+    if f.get("limits"):
+        out.append(f"- **API limits:** {limits_line(f['limits'])}")
+    if f.get("again"):
+        out.append(f"- **Asked again:** {again_line(f['again'])}")
+    if f.get("size"):
+        out.append(f"- **Size:** {size_line(f['size'])}")
     if session.get("skipped"):
         out.append(f"- **Session lock:** not measured ({session['skipped']})")
     elif "lock" in session:
@@ -697,6 +886,8 @@ def report(f: Findings) -> str:
         out.append("")
 
     out += api_section(f.get("api") or {})
+    out += limits_section(f.get("limits") or {})
+    out += terms_section(f.get("terms") or {})
 
     watched = (f.get("watch") or {}).get("pages") or []
     if watched:
@@ -712,11 +903,22 @@ def report(f: Findings) -> str:
             if not page["calls"]:
                 out += ["- no XHR or fetch", ""]
                 continue
+            clicked = page.get("clicked")
+            if clicked:
+                then = short_url(clicked.get("url") or "")
+                out += [
+                    f"Its next-page control clicked: `{clicked['control']}`, then at {then}."
+                    if clicked.get("control")
+                    else "No next-page control found on it to click.",
+                    "",
+                ]
             out += ["| call | answer | what |", "|---|---|---|"]
-            for c in page["calls"][:20]:
+            shown = page["calls"][:20] + [c for c in page["calls"][20:] if c.get("after_click")][:10]
+            for c in shown:
                 where = "" if c["own"] else f" ({urlsplit(c['url']).hostname})"
+                after = " (after the click)" if c.get("after_click") else ""
                 out.append(
-                    f"| {c['method']} `{short_url(c['url'], 70)}`{where} | {c['status']} {c['type']}, "
+                    f"| {c['method']} `{short_url(c['url'], 70)}`{where}{after} | {c['status']} {c['type']}, "
                     f"{c['bytes']:,} bytes | {what_call(c)} |"
                 )
             out.append("")

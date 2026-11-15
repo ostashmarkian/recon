@@ -1,5 +1,53 @@
 # Changelog
 
+## Unreleased
+
+From building scrapers for two electronics marketplaces on one Alibaba Cloud API, where the page size, the depth
+of the pages, the terms' pace and a silent refusal were all found by hand:
+
+- **API limits.** The product list a plain client got from the API (one the pages fetch, a POST among them, or one
+  the API step asked) is asked with a page of 200 items: how many a page holds at most (a `page_size` of 100 had
+  come back as 50, unsaid). Then with the last page its total names: rows to the end, none, an error, or one page
+  again (the page before the last the same: a clamp; the first page's rows: a wrap). Where they stop or repeat,
+  the pages between are halved, by ratio while far apart, to the last page that gives its own rows, and the
+  verdict says how many rows paging reaches of the total (a window of 500 rows on one shop, 1,250 on the other).
+  The page, the offset and the page size are found in a query, a form body or a JSON body one level deep, and
+  rewritten there alone, each value of the type it had; `p` is no page (a signing helper sets it). A call that
+  sends neither, as one shop's search by category, is tried with the page and the size its answer names
+  (`"page": 1, "pageSize": 25`), each kept only when sending it changes the answer: the next page other rows,
+  half the size half the items. The next page is asked first: when it gives the first page's rows, the page
+  parameter changes nothing, and no wrap or clamp is said. A verdict says only what was asked: the last page giving
+  items with the page before it unread is "a clamp not ruled out", not "to the end". Only a call that passes the
+  replay's checks is paged (no route that may change the site's state, no GraphQL mutation, no internal host,
+  robots.txt). 15 requests at most, one at a time; a refusal ends them, and one on the site's own pages keeps the
+  burst off.
+- **A part number's search that gives its one product** is asked once more with a listing's category id, within
+  the same four requests: the search had answered "data, no product list", and the list stayed unread.
+- **The same list asked again at the end of the run.** One shop's API, after a sample at 5 requests a second,
+  answered new sessions with `total 0`, a 200 and `x-tag-upstream: empty_header_tag`: a silent refusal that read
+  as an empty category. Now an empty list where the first answer held items is said, with the headers new in
+  the answer; it counts as protection (no burst runs) and lifts a level 0 to 1, "a silent refusal".
+- **Size.** The largest count an answer gave (a list's `total`, `resultTotal`, `num_found` and the like, a count
+  beside a product list in the page's state), and the call that gave it. JSON answers now carry their total.
+- **Terms of use.** The pages the home page links as its terms (by the link's words in several languages, or its
+  address; not a privacy or cookie page), two at most where robots.txt allows, on the site or another host of its
+  domain, its host looked up in DNS first (one with no public DNS is never asked). Their sentences on a pace (`每秒超过 2 次请求`, "1 request per second") and on robots, crawlers and
+  scraping are quoted as written, and counted; the home page's own words too.
+- **The watch clicks a listing's next page once,** by its markup (`rel=next`, an aria label, common pagination
+  classes) or its words (`下一页`, Next, ›, Далі, Weiter, ...), never one leading to a cart or an account, and
+  marks the calls after the click: a list paged by a script shows only then.
+- **The watch can no longer hang.** On one shop the run waited 45 minutes for the body of an answer that never
+  ended. Now a page has a bounded time, a body 10 s (60 s for a page's calls in all), and an answer still open is
+  named as a stream or a long poll.
+- **A monitoring endpoint is no API base.** Alibaba Cloud's real-user monitoring, named `endpoint` in an inline
+  script (`*.log.aliyuncs.com/rum/`), was reported as one; Sensors Data, Baidu, CNZZ and GrowingIO are left out
+  with it.
+- **VAT in Chinese words:** `含增值税`, `含税`, `不含税`, `未税`.
+- **Another host's robots.txt is followed through its redirects,** as RFC 9309 asks: an `http://` link's robots.txt
+  that moved to `https://` had counted as unreadable, so the host as wholly disallowed. The routes line says how
+  many JS bundles robots.txt kept out (all 29 of one shop's).
+- 332 tests.
+
 ## 1.2.2 - 2026-10-25
 
 From a run on an electronics marketplace on two hosts of one domain, behind Alibaba Cloud, whose scraper was then

@@ -560,7 +560,8 @@ class TestWatch:
             "what the browser sent and the plain client did not"
         )
         assert first[2]["replay"]["works"], "the fragment too"
-        assert [p for _, _, p in site.asked].count("/api/catalog/products?limit=24") == 1, "asked again once"
+        asked = [p for _, _, p in site.asked].count("/api/catalog/products?limit=24")
+        assert asked == 2, "once by the API step, whose answer the watch takes, and once more at the end of the run"
         assert "## What the pages fetch, in Chrome" in text and "(abc-dsn.algolia.net)" in text
 
     def test_no_cookie_or_token_value_is_kept_or_sent(self):
@@ -648,7 +649,7 @@ class TestWatch:
             "products",
             24,
         )
-        assert [p for _, _, p in site.asked].count("/api/catalog/products?limit=24") == 1
+        assert [p for _, _, p in site.asked].count("/api/catalog/products?limit=24") == 2, "and once at the end"
         replay = f["watch"]["pages"][0]["calls"][0]["replay"]
         assert (replay["works"], replay["items"]) == (True, 24)
 
@@ -765,7 +766,7 @@ class TestNuxtShop:
         [bare] = probe["others"]
         assert (bare["url"], bare["error"], bare["message"]) == (route, True, "Either cate_id or keyword is required.")
         asked = [p for _, _, p in site.asked]
-        assert asked.count(route) == 1 and asked.count(probe["url"]) == 1
+        assert asked.count(route) == 1 and asked.count(probe["url"]) == 2, "the list once more at the end of the run"
         assert not [p for p in asked if "cart/add" in p or "stock-info" in p], "a POST route is never asked"
         assert f["refused_elsewhere"] == {}
 
@@ -780,17 +781,19 @@ class TestNuxtShop:
         assert len(probe["others"]) == 2, "the other list routes, on the API host that answered"
 
     def test_a_part_number_searched_to_its_one_product(self):
-        """The search gives the part number's one product: data, not a list, and the verdict says with what it
-        was asked and what it said without it."""
+        """The search gives the part number's one product: data, not a list; asked once more with a listing's
+        category id, it gives its list, and the verdict says with what it was asked and what it said without."""
         f, text, _ = scan(NuxtSite(exact=True), burst=False, products=0)
         probe = f["api"]["probe"]
         held = f["product"]["jsonld"].get("mpn") or f["product"]["state"]["product"]["fields"]["mpn"]
-        assert (probe["kind"], probe["error"], probe["filled"]) == ("data", False, {"keyword": held})
+        cate = probe["filled"]["cate_id"]
+        assert (probe["kind"], probe["error"], probe["items"]) == ("products", False, 25)
+        one = next(x for x in probe["others"] if "keyword=" in x["url"])
+        assert (one["kind"], one["url"].endswith(f"keyword={held}")) == ("data", True)
         assert (
-            f"a plain client got JSON from a list route (data, no product list, with keyword={held}; without it, an"
+            f"a plain client got JSON from a list route (a product list of 25, with cate_id={cate}; without it, an"
             " error message: Either cate_id or keyword is required.)" in text
         )
-        assert "answered without them" not in text
 
     def test_the_page_state(self, run):
         f, *_ = run

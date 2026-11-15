@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from . import settings
 from .clients import Answer
@@ -117,6 +117,22 @@ PAGE_OF = re.compile(r"\bpage\s+\d+\s+of\b", re.I)
 HREF = re.compile(r"""<a\b[^<>]*?\bhref\s*=\s*["']([^"']*)["']""", re.I)
 
 
+# a template's text the page left unrendered: doT's {{! firstPdfUrl}}, Mustache, Jinja, ERB, a JS template literal
+TEMPLATE = re.compile(r"\{\{|\{%|\$\{|<%|%7B%7B", re.I)
+
+
+def join(base: str, href: str) -> str | None:
+    """`href` read against `base`, entities decoded; None for an address Python cannot parse, or a template's
+    text left unrendered (/{{! firstPdfUrl}}), no address at all."""
+    href = entities.unescape(href).strip()
+    if TEMPLATE.search(href):
+        return None
+    try:
+        return urljoin(base, href)
+    except ValueError:
+        return None
+
+
 TITLE = re.compile(r"<title[^<>]*>([^<]*)</title>", re.I)
 
 
@@ -165,7 +181,8 @@ LABELS = {
     "VAT": re.compile(
         r"\b(?:incl\.?|excl\.?|inc\.?|ex\.?|including|excluding|plus)\s*(?:VAT|GST|MwSt\.?|IVA|DPH)\b"
         r"|\b(?:s|bez|z)\s+(?:DPH|VAT)\b|\bIVA\s+incluid[oa]\b|\bsin\s+IVA\b|\b(?:inkl|zzgl|exkl)\.?\s*MwSt"
-        r"|\bTTC\b|\bhors taxes?\b|\bbrutto\b|\bnetto\b|з ПДВ|без ПДВ|с НДС|без НДС|税込|税抜|부가세",
+        r"|\bTTC\b|\bhors taxes?\b|\bbrutto\b|\bnetto\b|з ПДВ|без ПДВ|с НДС|без НДС|税込|税抜|부가세"
+        r"|含增值税|含税|含稅|不含税|不含稅|未税|未稅",
         re.I,
     ),
     "stock": re.compile(

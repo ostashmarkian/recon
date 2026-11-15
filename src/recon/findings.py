@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from . import settings
+from .calls import TOTAL
 from .classify import GUARDS, REFUSALS, judge, passes
 from .clients import Answer
 
@@ -226,6 +227,16 @@ def protection_level(f: Findings) -> dict[str, Any]:
         said += f" A rate limit: refused in {'; '.join(rate)}."
         if level == 0:
             level, label = 1, "a rate limit"
+    again = f.get("again") or {}
+    if again.get("silent") or again.get("refused"):
+        first, now = again["first"], again["now"]
+        said += (
+            f" The API's product list gave {first['items']} items at first and, asked again after"
+            f" {again['after']} requests, "
+            + ("none, with a 200: a silent refusal." if again["silent"] else f"{now['status']} {now['verdict']}.")
+        )
+        if level == 0:
+            level, label = 1, "a silent refusal" if again["silent"] else "a refusal of the API"
     if late_turned:
         by = f", {late['why']}" if late.get("why") else ""
         said += (
@@ -284,9 +295,45 @@ def protection(f: Findings) -> list[str]:
     refused = (f.get("long") or {}).get("refused")
     if refused:
         why.append(f"refused in the long session ({refused['status']} {refused['verdict']} at request {refused['at']})")
+    again = f.get("again") or {}
+    if again.get("silent") or again.get("refused"):
+        now = again["now"]
+        why.append(
+            "the API's product list, asked again at the end, "
+            + (
+                "came back empty (a silent refusal)"
+                if again["silent"]
+                else f"refused ({now['status']} {now['verdict']})"
+            )
+        )
     if (f.get("robots") or {}).get("state") == "unreadable":
         why.append("robots.txt could not be read: everything counts as disallowed")
     return why
+
+
+def size_of(f: Findings) -> dict[str, Any] | None:
+    """The largest count an answer gave, and where: a list's total in the API's answers and the calls the pages
+    made, or a count beside a product list in a page's state. Of what was asked, often one category: the site
+    holds at least that many."""
+    found: list[tuple[int, str]] = []
+    api = f.get("api") or {}
+    probe = api.get("probe") or {}
+    for x in [probe, *(probe.get("others") or [])]:
+        if isinstance(x.get("total"), int):
+            found.append((x["total"], f"GET {x['url']}"))
+    for page in (f.get("watch") or {}).get("pages") or []:
+        for c in page.get("calls") or []:
+            if isinstance(c.get("total"), int) and c.get("own"):
+                found.append((c["total"], f"{c['method']} {c['url']}"))
+    for s in api.get("state") or []:
+        for x in s.get("lists") or []:
+            for key, n in (x.get("counts") or {}).items():
+                if isinstance(n, int) and not isinstance(n, bool) and TOTAL.match(key):
+                    found.append((n, f"the {s['page']} page's state, `{key}` beside `{x['path']}`"))
+    if not found:
+        return None
+    n, where = max(found, key=lambda t: t[0])
+    return {"total": n, "where": where}
 
 
 def ua_filter(f: Findings) -> str | None:

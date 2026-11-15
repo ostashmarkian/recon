@@ -15,6 +15,7 @@ from recon.clients import Answer
 from recon.pages import drawn, gunzip, product_data, read_sitemap, visible_text
 from recon.probe import Recon, fetch_within
 from recon.state import read_state
+from recon.terms import terms_links, terms_said
 
 MB = 1_000_000
 
@@ -46,6 +47,18 @@ def test_a_hostile_page_is_read_in_linear_time(body: str) -> None:
     product_data(page)
     drawn(page)
     assert time.monotonic() - began < 3.0
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["<p>" + "7" * MB + "</p>", "每秒" + "1" * MB, "<a href=x>" * (MB // 10), "1. " * (MB // 3)],
+    ids=["a million digits", "a pace's words and a million digits", "unclosed anchors", "numbered sentences"],
+)
+def test_the_terms_are_read_in_linear_time(body: str) -> None:
+    began = time.monotonic()
+    terms_said(body)
+    terms_links(body, "https://shop.test/")
+    assert time.monotonic() - began < 5.0
 
 
 def test_visible_text_drops_scripts_and_styles() -> None:

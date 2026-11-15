@@ -236,3 +236,10 @@ def test_an_error_message_and_what_it_lacks() -> None:
     assert fill_for(["cate_id", "keyword"], None, listings) == {"cate_id": "160112"}
     assert fill_for(["cate_id"], None, listings[:1]) is None, "a brand's number is no category's"
     assert fill_for(["cate_id"], "M24512", ["https://shop.test/category/?page=2"]) is None
+
+
+def test_a_monitoring_endpoint_is_no_api_base() -> None:
+    """Alibaba Cloud's real-user monitoring, named "endpoint" in an inline script, as on ickey.cn (2026-10-30)."""
+    rum = "https://proj-xtrace-5cdd.cn-hangzhou.log.aliyuncs.com/rum/web/v2?workspace=default-cms-1"
+    html = f'<script>var cfg={{endpoint:"{rum}",ICKEY_APIHOST_V4:"https://pc-api.shop.test"}}</script>'
+    assert [b["url"] for b in api_bases(html)] == ["https://pc-api.shop.test"]

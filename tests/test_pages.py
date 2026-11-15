@@ -223,3 +223,9 @@ def test_product_and_listing_addresses() -> None:
     for path in ("/category/usb/070403.html", "/en/brands/acme/12/", "/manufacturers/nidec/16918.html", "/c/1"):
         assert LISTING_PATH.search(path), path
     assert not LISTING_PATH.search("/catalog/diodes/1234") and not LISTING_PATH.search("/cart/")
+
+
+def test_vat_in_chinese_words() -> None:
+    """ICKey's yuan prices say they hold VAT: 内地交货(含增值税), delivery in the mainland, VAT included."""
+    seen = product_data(page("<h1>STM32</h1><p>内地交货(含增值税) ¥12.30</p><p>不含税价 ¥10.88</p>"))["labels"]
+    assert [s[:4] for s in seen["VAT"]] == ["含增值税", "不含税价"]
