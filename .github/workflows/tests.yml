@@ -34,7 +34,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install ".[dev]"
       - name: pytest (offline, against a fake site)
-        run: python -m pytest -q
+        run: python -m pytest -q -n auto
       - name: the command
         run: |
           recon --version

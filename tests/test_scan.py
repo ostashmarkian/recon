@@ -48,6 +48,16 @@ class TestOpenSite:
         assert f["ua_filter"] is None
         assert f["session"]["lock"] is False
 
+    def test_where_the_time_went(self, open_site):
+        """Each step's time and requests, in the order they ran; together they are the run's requests."""
+        f, text, *_ = open_site
+        timing = f["timing"]
+        assert list(timing)[:3] == ["look_around", "clients", "user_agents"] and "burst" in timing
+        assert sum(t["requests"] for t in timing.values()) == f["requests"]
+        assert timing["burst"]["requests"] == f["burst"]["asked"]
+        assert "## Where the time went" in text
+        assert f"| burst | {f['burst']['asked']} | " in text
+
     def test_pages_and_sitemap(self, open_site):
         f, *_ = open_site
         assert f["page"] == f"{BASE}/product/1/"
@@ -889,6 +899,29 @@ class TestNuxtShop:
         assert (f["api"]["bundles"]["read"], f["api"]["bundles"]["disallowed"]) == (0, 2)
         assert not [p for _, _, p in site.asked if p.startswith("/_nuxt/")]
 
+    def test_bundles_are_asked_as_a_browser_asks_a_script(self):
+        """A static host that gives a file only to its own pages' scripts: Accept */*, the page as the Referer."""
+        site = NuxtSite(scripts="referer")
+        f, _, _ = scan(site, burst=False, products=0)
+        assert (f["api"]["bundles"]["read"], f["api"]["bundles"]["failed"]) == (4, {})
+        sent = [h for _, p, h in site.sent if p.startswith("/_nuxt/")]
+        assert sent and all(h["Accept"] == "*/*" and h["Referer"].startswith(BASE) for h in sent)
+        assert len(f["api"]["routes"]) == 7
+
+    def test_bundles_not_given_are_not_counted_read(self):
+        """Every file answered 464: none read, three asked and the rest of that host not, and the verdict says the
+        routes are not known rather than that there are none."""
+        site = NuxtSite(scripts="refused", head='<script src="/_nuxt/x1.js"></script><script src="/_nuxt/x2.js">')
+        f, text, _ = scan(site, burst=False, products=0)
+        b = f["api"]["bundles"]
+        assert (b["read"], b["failed"]) == (0, {"464 client-error": 3})
+        assert sum(b["given_up"].values()) >= 1
+        asked = [p for _, _, p in site.asked if p.startswith("/_nuxt/")]
+        assert len(asked) == settings.BUNDLE_FAILS_MOST
+        assert "not given: 3 (464 client-error)" in text
+        assert "in a row not given: the routes the site's JS names are not known" in text
+        assert "Each asked as Chrome asks a script" in text
+
 
 def test_a_sitemap_behind_a_redirect_is_followed_and_named():
     """/sitemap-index.xml redirects into a folder, to a file not there; the same name in that folder is the index."""
@@ -921,6 +954,16 @@ def test_a_sitemap_redirect_to_another_site_is_named_not_followed():
     [moved] = f["sitemap"]["files"]
     assert moved["chain"][-1] == {"url": "https://cdn.other.test/sitemap.xml", "status": None, "why": "another site"}
     assert not [p for _, _, p in site.asked if "other.test" in p]
+
+
+def test_no_more_sitemaps_guessed_once_every_address_gets_one_page():
+    """A site that answers any address with the same page (an app's index.html): the second guess that gets it
+    is the last, not six of them."""
+    site = FakeSite(sitemap_at="/nowhere.xml", soft404=True)
+    f, text, _ = scan(site, burst=False, products=0)
+    assert [p for _, _, p in site.asked if "sitemap" in p] == ["/sitemap.xml", "/sitemap_index.xml"]
+    assert f["sitemap"]["asked"] == 2
+    assert "/sitemap_index.xml: 200 not a sitemap: the page every address gets, so no more guessed" in text
 
 
 def test_sitemap_guessed_when_robots_names_none():

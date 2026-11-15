@@ -541,12 +541,16 @@ class NuxtSite(FakeSite):
         exact: bool = False,
         head: str = "",
         paged: bool = False,
+        scripts: str = "open",
         **kw: Any,
     ):
         kw.setdefault("guard", "cloudflare-open")
         kw.setdefault("dns", API_DNS)
         super().__init__(**kw)
         self.assets = CDN if cdn else ""  # bundles on a CDN host of their own
+        # its bundles: to anyone ("open"); as a script of its own pages only, any other answered 464 ("referer");
+        # to no plain client, 464 ("refused"), as one shop's static host answered every file
+        self.scripts = scripts
         self.tree = tree  # the home page links /category first: a tree of categories, no listing
         self.token = token  # the API's search asks for a token recon has not: an error message whatever is sent
         self.exact = exact  # the search finds a part number's one product, not a page of them
@@ -594,6 +598,9 @@ class NuxtSite(FakeSite):
         if path == "/nuxt-sitemaps/sitemap-index.xml":  # its static pages only
             pages = "".join(f"<url><loc>{BASE}/{p}/</loc></url>" for p in ("about", "contact", "faq"))
             return Answer(url, 200, h, (), f"<urlset>{pages}</urlset>".encode(), 0.01)
+        as_script = headers.get("Referer", "").startswith(BASE) and headers.get("Accept") == "*/*"
+        if path.startswith("/_nuxt/") and (self.scripts == "refused" or (self.scripts == "referer" and not as_script)):
+            return Answer(url, 464, h, (), b"", 0.01)
         if path.startswith("/_nuxt/") and path[7:] in BUNDLES:
             js = {**h, "content-type": "application/javascript"}
             return Answer(url, 200, js, (), BUNDLES[path[7:]].encode(), 0.01)

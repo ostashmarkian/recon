@@ -67,7 +67,8 @@ Cloudflare, abridged, with the shop's identity replaced:
 Every line is backed by tables of the actual answers below it: which client
 got which status on which page, what each User-Agent got, what Chrome saw, each
 product page read, each not-found probe. See the full report:
-[docs/example-report.md](docs/example-report.md).
+[docs/example-report.md](docs/example-report.md). A report now closes with
+where the time went: each step's requests and seconds.
 
 ## Features
 
@@ -121,7 +122,11 @@ product page read, each not-found probe. See the full report:
   lists and search, detail, stock and price; and a helper that adds
   parameters to the calls (`addAntiSpiderParams`), with what it sets. Its own
   bundles only: on the site's host, another host of its domain, or the CDN
-  its runtime config names (Nuxt's `cdnURL`, Next's `assetPrefix`).
+  its runtime config names (Nuxt's `cdnURL`, Next's `assetPrefix`). Each is
+  asked as Chrome asks a script (`Accept: */*`, the page as its Referer); a
+  file not given is counted by its answer, never as read, and a host that
+  gives none of 3 in a row is left: then the report says the routes are not
+  known, not that there are none.
 - What the pages' state holds (Nuxt 3's `__NUXT_DATA__`, Next.js's
   `__NEXT_DATA__`): each product list's key path, its size and the counts
   beside it, and the product a product page is about. A listing drawn on the
@@ -143,8 +148,10 @@ product page read, each not-found probe. See the full report:
   carry), its paging keys and its total, an HTML fragment of product links, a
   GraphQL operation. On the listing, its next-page control is clicked once,
   and the calls after the click are marked: a list paged by a script shows
-  only then. An answer that never ends (a stream, a long poll) is waited for
-  10 s and named, so a page that never lets go cannot hold the run.
+  only then. A page whose network never goes quiet (it polls) is read,
+  scrolled and clicked as it stands after 30 s, and named. An answer that
+  never ends (a stream, a long poll) is waited for 10 s and named, so a page
+  that never lets go cannot hold the run.
 - Each product list the site's own API answered is then asked once more with
   the plain client the site lets in, with no cookie and no token. The report
   says whether the API works without the browser, and if not, what the page
@@ -393,7 +400,7 @@ site that says no.
 ```bash
 git clone https://github.com/ostashmarkian/recon && cd recon
 python -m venv .venv && .venv/bin/pip install -e ".[dev,browser]"   # .venv\Scripts\ on Windows
-pytest                                       # 332 tests, offline, ~4 min
+pytest -n auto                               # 342 tests, offline, ~30 s on 12 cores, ~4 min on one
 ruff check src tests && ruff format --check src tests
 mypy
 ```

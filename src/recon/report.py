@@ -107,13 +107,28 @@ def watch_line(w: dict[str, Any]) -> str:
     click = ""
     if clicked and clicked.get("control"):
         click = f"; the listing's next page clicked ({clicked['control']}), {len(after)} calls after it"
+    elif clicked and clicked.get("untried"):
+        click = "; the listing broke before its next page was looked for"
     elif clicked:
         click = "; no next-page control found on the listing to click"
     return (
         f"{len(calls)} calls on {len(w['pages'])} pages{given}"
         + (f"; {lead}" if lead else "; none of them a product list")
         + click
+        + page_states(w.get("pages") or [])
     )
+
+
+def page_states(pages: list[dict[str, Any]]) -> str:
+    """The pages whose network never went quiet, read as they stood, and those that broke in Chrome."""
+    said = ""
+    busy = [short_url(p["url"]) for p in pages if p.get("busy")]
+    if busy:
+        said += f"; never quiet, read as they stood: {', '.join(busy)}"
+    broke = [f"{short_url(p['url'])} ({p['error']})" for p in pages if p.get("error")]
+    if broke:
+        said += f"; broke in Chrome: {', '.join(broke)}"
+    return said
 
 
 def short_url(url: str, most: int = 90) -> str:
@@ -167,6 +182,7 @@ def routes_line(api: dict[str, Any]) -> str:
         said += f" (from {', '.join(b['hosts'])} too)"
     if b.get("internal"):
         said += f"; {sum(b['internal'].values())} on internal hosts not asked ({', '.join(b['internal'])})"
+    said += bundles_not_read(b)
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in routes:
         groups.setdefault(r["kind"], []).append(r)
@@ -177,6 +193,25 @@ def routes_line(api: dict[str, Any]) -> str:
             said += f" and {len(found) - 4} more" if len(found) > 4 else ""
     if groups.get("other"):
         said += f"; {len(groups['other'])} other"
+    return said
+
+
+SCRIPT_ASKED = "`Accept: */*`, the page as its Referer"
+
+
+def bundles_not_read(b: dict[str, Any]) -> str:
+    """The JS files asked and not given, by their answer, and those of a host not asked after it gave none: with
+    none read, the routes they name are not known, whatever the count of routes says."""
+    said = ""
+    if b.get("failed"):
+        said += "; not given: " + ", ".join(f"{n} ({k})" for k, n in b["failed"].items())
+    if b.get("given_up"):
+        said += "; " + ", ".join(
+            f"{n} more on {h} not asked after {settings.BUNDLE_FAILS_MOST} in a row not given"
+            for h, n in b["given_up"].items()
+        )
+    if (b.get("failed") or b.get("given_up")) and not b.get("read"):
+        said += ": the routes the site's JS names are not known"
     return said
 
 
@@ -495,7 +530,9 @@ def api_section(api: dict[str, Any]) -> list[str]:
             + (f"; {b['disallowed']} disallowed by robots.txt" if b.get("disallowed") else "")
             + "".join(f"; served from {h} too, its robots.txt {state}" for h, state in (b.get("hosts") or {}).items())
             + "".join(f"; {n} on {h}, an internal host, not asked" for h, n in (b.get("internal") or {}).items())
+            + bundles_not_read(b)
             + "."
+            + (f" Each asked as Chrome asks a script: {SCRIPT_ASKED}." if b.get("failed") else "")
         )
         out.append("")
     routes = api.get("routes") or []
@@ -894,11 +931,18 @@ def report(f: Findings) -> str:
         out += [
             "## What the pages fetch, in Chrome",
             "",
-            "Each page loaded until its network went quiet, then scrolled once. Analytics and ads are left out.",
+            f"Each page loaded until its network went quiet ({settings.WATCH_WAIT} s at most: one that never goes"
+            " quiet is read as it stands), then scrolled once. Analytics and ads are left out.",
             "",
         ]
         for page in watched:
-            out.append(f'**{short_url(page["url"])}** ({page["status"] or "-"}, "{page["title"]}"):')
+            state = "".join(
+                [
+                    f"; its network never quiet, read after {page['busy']} s" if page.get("busy") else "",
+                    f"; broke: {page['error']}" if page.get("error") else "",
+                ]
+            )
+            out.append(f'**{short_url(page["url"])}** ({page["status"] or "-"}, "{page["title"]}"{state}):')
             out.append("")
             if not page["calls"]:
                 out += ["- no XHR or fetch", ""]
@@ -906,12 +950,13 @@ def report(f: Findings) -> str:
             clicked = page.get("clicked")
             if clicked:
                 then = short_url(clicked.get("url") or "")
-                out += [
-                    f"Its next-page control clicked: `{clicked['control']}`, then at {then}."
-                    if clicked.get("control")
-                    else "No next-page control found on it to click.",
-                    "",
-                ]
+                if clicked.get("control"):
+                    tried = f"Its next-page control clicked: `{clicked['control']}`, then at {then}."
+                elif clicked.get("untried"):
+                    tried = "Its next-page control was not looked for: the page broke first."
+                else:
+                    tried = "No next-page control found on it to click."
+                out += [tried, ""]
             out += ["| call | answer | what |", "|---|---|---|"]
             shown = page["calls"][:20] + [c for c in page["calls"][20:] if c.get("after_click")][:10]
             for c in shown:
@@ -960,4 +1005,39 @@ def report(f: Findings) -> str:
     elif llms:
         out.append("- llms.txt: " + (llms.get("skipped") or f"not there ({llms.get('status')} {llms.get('verdict')})"))
     out.append(f"- Pages in the pool: {f.get('pool', 0)}")
+    out += timing_section(f)
     return "\n".join(out) + "\n"
+
+
+# a step of the run, as the report names it
+STEP_NAMES = {
+    "look_around": "home page, robots.txt, sitemaps",
+    "clients": "clients",
+    "user_agents": "User-Agents",
+    "browser": "real browser",
+    "platform": "platform",
+    "product": "product page",
+    "not_found": "not-found pages",
+    "sample": "product sample",
+    "terms": "terms of use",
+    "api": "API without a browser",
+    "watch": "the watch, in Chrome",
+    "limits": "API limits",
+    "session_lock": "session lock",
+    "long": "long session",
+    "again": "the list asked again",
+    "burst": "burst",
+}
+
+
+def timing_section(f: Findings) -> list[str]:
+    """Each step's time and requests, in the order they ran: where a long run went, and which answers were slow."""
+    timing = f.get("timing") or {}
+    shown = {step: t for step, t in timing.items() if t["seconds"] >= 0.1 or t["requests"]}
+    if not shown:
+        return []
+    out = ["", "## Where the time went", "", "| step | requests | seconds | s a request |", "|---|---|---|---|"]
+    for step, t in shown.items():
+        each = f"{t['seconds'] / t['requests']:.2f}" if t["requests"] else "-"
+        out.append(f"| {STEP_NAMES.get(step, step)} | {t['requests']} | {t['seconds']:.1f} | {each} |")
+    return out

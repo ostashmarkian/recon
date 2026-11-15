@@ -94,6 +94,15 @@ CHUNK = re.compile(
 )
 
 
+def script_headers(url: str, page: str) -> dict[str, str]:
+    """What Chrome sends for a script a page loads, past the User-Agent: any type, not a page's (a page's Accept on a
+    .js file is no browser's), and the page as the Referer, its origin alone on another host (strict-origin-when-
+    cross-origin, Chrome's default). Some static hosts give a file only to a page of their own site."""
+    to, by = urlsplit(url), urlsplit(page)
+    same = (to.scheme, to.netloc.lower()) == (by.scheme, by.netloc.lower())
+    return {"Accept": "*/*", "Referer": page if same else f"{by.scheme}://{by.netloc}/"}
+
+
 def chunk_refs(js: str, bundle: str) -> list[str]:
     """The other JS files a bundle names: relative ones read against it, the others against the site's root."""
     origin = "{0.scheme}://{0.netloc}/".format(urlsplit(bundle))

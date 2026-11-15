@@ -136,6 +136,7 @@ from .api import (
     route_kind,
     routes_in,
     same_domain,
+    script_headers,
     scripts_of,
     wanted,
 )
@@ -490,8 +491,10 @@ class Recon:
         return dict(sorted(found.items(), key=lambda kv: order.index(kv[0])))
 
     async def isolated(self, name: str, do: Callable[[], Awaitable[None]]) -> None:
-        """One step; its failure is written down in the findings, and the run goes on."""
+        """One step; its failure is written down in the findings, and the run goes on. Its time and its requests
+        are kept (f["timing"]): where a run of five minutes went."""
         self.step = name if name in WATCHED_STEPS else None
+        began, asked = time.monotonic(), self.requests
         try:
             await do()
         except Exception as e:
@@ -499,6 +502,8 @@ class Recon:
             self.f.setdefault("errors", []).append({"step": name, "error": f"{type(e).__name__}: {e}"[:300]})
         finally:
             self.step = None
+            spent = {"seconds": round(time.monotonic() - began, 1), "requests": self.requests - asked}
+            self.f.setdefault("timing", {})[name] = spent
 
     def computed(self, key: str, make: Callable[[], Any], fallback: Any = None) -> None:
         """f[key] = make(); its failure is written down, and f[key] is `fallback`."""
@@ -670,6 +675,7 @@ class Recon:
         seen: set[str] = set()
         named = set() if guessed else set(queue)  # every file robots.txt or a read index names; a guess is none
         fails = 0  # files in a row that did not answer
+        soft = b""  # the page the last guess got in place of a sitemap
         while queue and asked < settings.SITEMAP_FILES and fails < settings.SITEMAP_FAILS_MOST:
             url = queue.pop(0)
             if url in seen:
@@ -691,6 +697,11 @@ class Recon:
             fails = 0
             if guessed and not looks_like_sitemap(a.body):  # a soft 404 page: try the next guess
                 files.append({"url": url, "status": a.status, "verdict": "not a sitemap", **moved})
+                if not chain and a.body and a.body in (self.home_answer.body, soft):
+                    # the page every address gets (an app's index.html, a soft 404): the other guesses would too
+                    files[-1]["verdict"] = "not a sitemap: the page every address gets, so no more guessed"
+                    queue = []
+                soft = a.body
                 continue
             if guessed:  # the first guess that answers is the sitemap: the others are not asked
                 queue, guessed = [], False
@@ -1318,20 +1329,27 @@ class Recon:
         for _, a in pages:
             for _, text in scripts_of(a.text):
                 read(text, "an inline script")
-        groups = [[u for u in bundle_refs(a.text, a.url) if ours(u)] for _, a in pages]
+        # each file with the page that loads it: Chrome names that page as the Referer of its scripts
+        groups = [[(u, a.url) for u in bundle_refs(a.text, a.url) if ours(u)] for _, a in pages]
         queue = [g[i] for i in range(max(map(len, groups), default=0)) for g in groups if i < len(g)]
         seen: set[str] = set()
         files: list[dict[str, Any]] = []
         hosts: dict[str, str] = {}  # another host that serves them: what its robots.txt was
         internal: dict[str, int] = {}  # a host not public (no public DNS, a private address): its files, not asked
+        failing: dict[str, int] = {}  # a host none of whose files was read: its files in a row not read
+        given_up: dict[str, int] = {}  # a host's files not asked once BUNDLE_FAILS_MOST of them failed in a row
+        gave: set[str] = set()  # the hosts that gave a file
         total = disallowed = 0
         while queue and len(files) < settings.BUNDLES_MOST and total < settings.BUNDLES_BYTES:
-            url = queue.pop(0)
+            url, page = queue.pop(0)
             if url in seen:
                 continue
             seen.add(url)
             host = (urlsplit(url).hostname or "").lower()
             site = same_host(url, self.home)
+            if failing.get(host, 0) >= settings.BUNDLE_FAILS_MOST:  # it gives no file to this client
+                given_up[host] = given_up.get(host, 0) + 1
+                continue
             if not site and (await self.look_up(host))["dns"] != "public":
                 internal[host] = internal.get(host, 0) + 1
                 continue
@@ -1340,23 +1358,33 @@ class Recon:
             if not (self.robots if site else self.host_robots[host]).allows(url):
                 disallowed += 1
                 continue
-            a = await self.get(client, url, own=site)  # a CDN's refusal is the CDN's
+            a = await self.get(client, url, headers=script_headers(url, page), own=site)  # a CDN's refusal is its
             if site:  # another host's answers stay out of what the site has in front
                 self.keep(a)
             if judge(a)[0] != "ok":
                 files.append({"url": url, "status": a.status, "verdict": judge(a)[0]})
+                if host not in gave:
+                    failing[host] = failing.get(host, 0) + 1
                 continue
+            gave.add(host)
             js = a.body[: settings.BUNDLE_BYTES].decode("utf-8", "replace")
             total += len(a.body)
             name = urlsplit(url).path.rsplit("/", 1)[-1]
             files.append({"url": url, "status": a.status, "bytes": len(a.body), "routes": read(js, name)})
-            queue += [u for u in chunk_refs(js, url) if ours(u) and u not in seen]
+            queue += [(u, page) for u in chunk_refs(js, url) if ours(u) and u not in seen]
+        failed: dict[str, int] = {}  # "464 client-error": files not read so
+        for x in files:
+            if "bytes" not in x:
+                said = f"{x['status'] or '-'} {x['verdict']}"
+                failed[said] = failed.get(said, 0) + 1
         return {
             "bundles": {
-                "read": len(files),
-                "named": len(seen | set(queue)),
+                "read": sum("bytes" in x for x in files),
+                "named": len(seen | {u for u, _ in queue}),
                 "bytes": total,
                 "disallowed": disallowed,
+                "failed": failed,
+                "given_up": given_up,
                 "hosts": hosts,
                 "internal": internal,
                 "files": files[:40],
@@ -1523,7 +1551,7 @@ class Recon:
                     "status": page.get("status"),
                     "title": page.get("title"),
                     "calls": calls,
-                    **({"clicked": page["clicked"]} if "clicked" in page else {}),
+                    **{k: page[k] for k in ("busy", "error", "clicked") if k in page},
                 }
             )
         await self.replay(found)

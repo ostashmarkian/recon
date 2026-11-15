@@ -29,7 +29,7 @@ dependencies = ["httpx[http2]>=0.28", "curl_cffi>=0.16"]
 [project.optional-dependencies]
 # Google Chrome itself must be installed; patchright drives it
 browser = ["patchright>=1.50"]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+dev = ["pytest>=8", "pytest-xdist>=3.6", "ruff>=0.6", "mypy>=1.11"]
 
 [project.scripts]
 recon = "recon.cli:main"

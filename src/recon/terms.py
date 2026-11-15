@@ -7,11 +7,15 @@ from typing import Any
 from . import settings
 from .pages import TAG, join, visible_text
 
-# a link to the terms by its words or its address, in the shops' languages; a privacy or cookie page is not one
+# a link to the terms by its words or its address, in the shops' languages; a privacy or cookie page is not one.
+# 协议 alone is a protocol as well as an agreement, and an electronics shop's categories are named by protocols
+# (通信协议, 接口协议): only a user's, a service's or a site's agreement is its terms
 TERMS_WORDS = re.compile(
     r"terms|conditions|agreement|\btos\b|nutzungsbedingungen|gesch[äa]ftsbedingungen|\bagb\b|\bcgv\b|\bcgu\b"
     r"|conditions[- _]g[ée]n[ée]rales|regulamin|warunki|t[ée]rminos|condiciones|termini|condizioni|voorwaarden"
-    r"|podm[íi]nky|услови|соглашени|оферт|умови|угод|协议|協議|条款|條款|規約|약관",
+    r"|podm[íi]nky|услови|соглашени|оферт|умови|угод"
+    r"|(?:用户|用戶|服务|服務|注册|註冊|使用|会员|會員|网站|網站|平台|交易|购买|購買|销售|銷售)(?:协议|協議)"
+    r"|条款|條款|法律声明|法律聲明|規約|약관",
     re.I,
 )
 PRIVACY = re.compile(r"privacy|cookie|datenschutz|конфіденц|конфиденц|隐私|隱私|プライバシー|개인정보", re.I)

@@ -124,6 +124,7 @@ DNS_WAIT = 10.0
 BUNDLES_MOST = 30
 BUNDLE_BYTES = 5_000_000
 BUNDLES_BYTES = 40_000_000
+BUNDLE_FAILS_MOST = 3  # files of one host in a row not given, none given before: its others are not asked
 ROUTES_MOST = 300
 # requests of list and search routes without the browser, best first, until one gives a product list: each route
 # on the API bases in turn until one answers other than 404; and once more with a value an error message says

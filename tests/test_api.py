@@ -22,6 +22,7 @@ from recon.api import (
     route_kind,
     routes_in,
     same_domain,
+    script_headers,
     stateful,
     wanted,
 )
@@ -85,6 +86,15 @@ def test_the_chunks_a_bundle_names() -> None:
     assert chunk_refs('import("../chunks/x.js");"vue.js"', "https://shop.test/assets/a/b.js") == [
         "https://shop.test/assets/chunks/x.js"
     ], "a bare name is no chunk"
+
+
+def test_a_script_is_asked_as_chrome_asks_it() -> None:
+    page = "https://www.shop.test/category/usb.html?page=2"
+    assert script_headers("https://www.shop.test/_nuxt/a.js", page) == {"Accept": "*/*", "Referer": page}
+    assert script_headers("https://static.shop.test/_nuxt/a.js", page) == {
+        "Accept": "*/*",
+        "Referer": "https://www.shop.test/",
+    }, "on another host, the page's origin alone"
 
 
 def test_routes_and_their_methods() -> None:

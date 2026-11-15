@@ -13,7 +13,7 @@ python -m venv .venv
 ## Before a pull request
 
 ```
-pytest
+pytest -n auto      # across all cores: ~30 s, not ~4 min
 ruff check src tests && ruff format --check src tests
 mypy
 ```

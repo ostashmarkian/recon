@@ -119,8 +119,16 @@ async def watch_in_browser(
                     async def visit(
                         url: str = url, state: dict[str, Any] = state, answers: list[Any] = answers
                     ) -> None:
-                        r = await page.goto(url, wait_until="networkidle", timeout=wait * 1000)
+                        loaded = time.monotonic()
+                        r = await page.goto(url, wait_until="domcontentloaded", timeout=wait * 1000)
                         state["status"] = r.status if r else None
+                        # quiet within the page's `wait` s; a page whose network never goes quiet (a poll, a
+                        # tracker on a loop) is read, scrolled and clicked as it stands, not dropped
+                        try:
+                            left = max(wait - (time.monotonic() - loaded), 1.0)
+                            await page.wait_for_load_state("networkidle", timeout=left * 1000)
+                        except Exception:
+                            state["busy"] = round(time.monotonic() - loaded, 1)
                         await page.mouse.wheel(0, 20_000)
                         await asyncio.sleep(settings.WATCH_SETTLE)
                         state["title"] = await page.title()
@@ -133,10 +141,12 @@ async def watch_in_browser(
                                 await asyncio.sleep(settings.WATCH_SETTLE)
                                 state["clicked"]["url"] = page.url
 
-                    try:  # a page that never goes quiet, or a call into Chrome that never returns: what it asked so far
+                    try:  # a page that never loads, or a call into Chrome that never returns: what it asked so far
                         await asyncio.wait_for(visit(), 2 * wait + 2 * settings.WATCH_SETTLE + settings.WATCH_BODY_WAIT)
                     except Exception as e:
-                        state["title"] = state["title"] or f"{type(e).__name__}"
+                        state["error"] = type(e).__name__
+                        if state["status"] is None:  # the page's own answer, when it came before the break
+                            state["status"] = document_status(page, answers)
                     page.remove_listener("response", on_answer)
                     calls: list[dict[str, Any]] = []
                     until = time.monotonic() + settings.WATCH_BODIES_WAIT
@@ -172,18 +182,33 @@ async def watch_in_browser(
                                 **({"after_click": True} if state["mark"] is not None and i >= state["mark"] else {}),
                             }
                         )
+                    # the click is said only when it was tried: a page that broke before it never looked
+                    clicked = state.get("clicked") or ({"control": None, "untried": True} if "error" in state else None)
                     seen.append(
                         {
                             "url": url,
                             "status": state["status"],
                             "title": state["title"][:80],
                             "calls": calls,
-                            **({"clicked": state.get("clicked") or {"control": None}} if url == click else {}),
+                            **({"busy": state["busy"]} if "busy" in state else {}),
+                            **({"error": state["error"]} if "error" in state else {}),
+                            **({"clicked": clicked or {"control": None}} if url == click else {}),
                         }
                     )
             finally:
                 await context.close()
     return {"ua": ua, "pages": seen, "seconds": round(time.monotonic() - began, 1)}
+
+
+def document_status(page: Any, answers: list[Any]) -> int | None:
+    """The status of the page's own answer among those it got (its main frame's last document), or None."""
+    for a in reversed(answers):
+        try:
+            if a.request.resource_type == "document" and a.frame == page.main_frame:
+                return int(a.status)
+        except Exception:  # an answer gone with its frame
+            continue
+    return None
 
 
 # analytics, ads and consent calls: what a page sends about its visitors, not what it reads

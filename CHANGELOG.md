@@ -46,7 +46,36 @@ of the pages, the terms' pace and a silent refusal were all found by hand:
 - **Another host's robots.txt is followed through its redirects,** as RFC 9309 asks: an `http://` link's robots.txt
   that moved to `https://` had counted as unreadable, so the host as wholly disallowed. The routes line says how
   many JS bundles robots.txt kept out (all 29 of one shop's).
-- 332 tests.
+
+From the two runs after the above, on the same marketplace and on a single-page app:
+
+- **A JS file the site does not give is not counted as read.** On the app, all 12 bundles answered 464 with no
+  body, and the report said "12 read of 12 named" and "0 API routes", as if the code named none. Now the files
+  not given are counted by their answer, and the verdict says the routes the site's JS names are not known. A
+  host none of whose files was given is left after 3 in a row (9 requests fewer on the app).
+- **A bundle is asked as Chrome asks a script:** `Accept: */*` rather than a page's, and the page that loads it
+  as the Referer (its origin alone on another host, Chrome's default). Some static hosts give a file only to
+  their own site's pages.
+- **A page whose network never goes quiet is still read, scrolled and clicked.** The watch waited for the
+  network to go quiet as part of loading the page; on the marketplace, whose pages poll, that wait timed out on
+  both pages, and the scroll, the title and the next-page click never came. The report then gave the page's
+  status as `-`, its title as `TimeoutError`, and said "no next-page control found", though none was looked for.
+  Now the page is loaded to its DOM, given what is left of its 30 s to go quiet, and read as it stands; the
+  report says which pages never went quiet. A page that breaks keeps the status its own answer had, and its
+  click is said to be untried. Checked in Chrome on a local page that polls every 300 ms: before, `-`,
+  `TimeoutError` and no click; now 200, its title, and page 2's list after the click.
+- **协议 alone is no agreement.** It is a protocol too, and the marketplace's category of protocol chips was
+  taken for its terms. Only a user's, a service's, a site's agreement (`用户协议`, `服务协议` and the like)
+  counts now, and `法律声明` with them.
+- **No more sitemaps guessed once every address gets one page.** The app answered all six guesses with its
+  `index.html`; now the guess that gets the home page, or the page the guess before it got, is the last.
+- **Where the time went:** each step's requests and seconds, in a table at the end of the report and in the
+  JSON (`timing`). A run of 332 s showed only its total.
+- The tests run across all cores (`pytest -n auto`, pytest-xdist in the `dev` extra, in CI too): 30 s, not
+  3 min 48 s. The watch itself is tested now, against a stand-in for patchright.
+- **Tencent EdgeOne is named** (`Server: TencentEdgeOne`, `EO-LOG-UUID`), as a CDN: on the marketplace it
+  answered the http:// redirect, while the block its https:// page gave plain curl was Alibaba Cloud WAF's.
+- 342 tests.
 
 ## 1.2.2 - 2026-10-25
 

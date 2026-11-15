@@ -32,6 +32,18 @@ def test_the_links_by_their_words_then_their_address():
     ], "a privacy or cookie page is none, nor a template's text; each once"
 
 
+def test_a_category_named_by_a_protocol_is_no_agreement():
+    """协议 is a protocol too: an electronics shop's category of interface chips is not its terms."""
+    html = (
+        '<a href="https://search.shop.test/cate-search?cate_id=260114">通信协议</a>'
+        '<a href="/content/agr.html">服务协议</a><a href="/legal.html">法律声明</a>'
+    )
+    assert terms_links(html, "https://www.shop.test/") == [
+        "https://www.shop.test/content/agr.html",
+        "https://www.shop.test/legal.html",
+    ]
+
+
 def test_a_pace_and_scraping_as_written():
     said = terms_said(AGREEMENT)
     assert said["rate"] == [

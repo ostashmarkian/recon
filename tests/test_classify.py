@@ -133,6 +133,13 @@ def test_alibaba_cloud_in_front_of_an_api_host() -> None:
     assert "Alibaba Cloud WAF" in GUARDS and "Alibaba Cloud (CDN)" not in GUARDS
 
 
+def test_tencent_edgeone_is_named_as_seen() -> None:
+    """A shop's http:// redirect, as Tencent's edge answered it (2026-11-15): named, and no guard."""
+    moved = Answer("u", 302, {"server": "TencentEdgeOne", "eo-log-uuid": "11409305747708655199", "location": "/"})
+    assert vendors_of([moved]) == {"Tencent EdgeOne (CDN)": ["server: TencentEdgeOne", "eo-log-uuid"]}
+    assert "Tencent EdgeOne (CDN)" not in GUARDS
+
+
 def test_alibaba_cloud_challenge_and_block() -> None:
     challenge = (
         b"<html><script>var arg1='3E40C5';setTimeout(function(){document.cookie='acw_sc__v2='+x;"

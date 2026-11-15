@@ -266,6 +266,12 @@ def vendors_of(answers: Iterable[Answer]) -> dict[str, list[str]]:
             add("Vercel (CDN)", "x-vercel-id")
         if "x-azure-ref" in h:
             add("Azure Front Door (CDN)", "x-azure-ref")
+        # Tencent's edge: seen answering a shop's http:// redirect, while the block its https:// page gave was
+        # Alibaba Cloud WAF's. Named as seen; no guard until one of its own refusals is
+        if "tencentedgeone" in server:
+            add("Tencent EdgeOne (CDN)", "server: TencentEdgeOne")
+        if "eo-log-uuid" in h:
+            add("Tencent EdgeOne (CDN)", "eo-log-uuid")
         if "google" in via:
             add("Google (CDN)", "via")
         if "x-varnish" in h:
