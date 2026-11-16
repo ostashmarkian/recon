@@ -72,7 +72,8 @@ From the two runs after the above, on the same marketplace and on a single-page 
 - **Where the time went:** each step's requests and seconds, in a table at the end of the report and in the
   JSON (`timing`). A run of 332 s showed only its total.
 - The tests run across all cores (`pytest -n auto`, pytest-xdist in the `dev` extra, in CI too): 30 s, not
-  3 min 48 s. The watch itself is tested now, against a stand-in for patchright.
+  3 min 48 s. The linear-time tests of hostile pages count CPU seconds, not the clock's, since a test across all
+  cores waits its turn for one. The watch itself is tested now, against a stand-in for patchright.
 - **Tencent EdgeOne is named** (`Server: TencentEdgeOne`, `EO-LOG-UUID`), as a CDN: on the marketplace it
   answered the http:// redirect, while the block its https:// page gave plain curl was Alibaba Cloud WAF's.
 - 342 tests.

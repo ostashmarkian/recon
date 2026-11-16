@@ -18,6 +18,9 @@ from recon.state import read_state
 from recon.terms import terms_links, terms_said
 
 MB = 1_000_000
+# CPU seconds, not the clock's: across all cores a test waits its turn for one. A reading that is not linear
+# takes hours on a megabyte, not seconds, so the bound need not be tight.
+CPU_MOST = 10.0
 
 
 @pytest.mark.parametrize(
@@ -43,10 +46,10 @@ MB = 1_000_000
 )
 def test_a_hostile_page_is_read_in_linear_time(body: str) -> None:
     page = Answer("u", 200, {}, (), body.encode())
-    began = time.monotonic()
+    began = time.process_time()
     product_data(page)
     drawn(page)
-    assert time.monotonic() - began < 3.0
+    assert time.process_time() - began < CPU_MOST
 
 
 @pytest.mark.parametrize(
@@ -55,10 +58,10 @@ def test_a_hostile_page_is_read_in_linear_time(body: str) -> None:
     ids=["a million digits", "a pace's words and a million digits", "unclosed anchors", "numbered sentences"],
 )
 def test_the_terms_are_read_in_linear_time(body: str) -> None:
-    began = time.monotonic()
+    began = time.process_time()
     terms_said(body)
     terms_links(body, "https://shop.test/")
-    assert time.monotonic() - began < 5.0
+    assert time.process_time() - began < CPU_MOST
 
 
 def test_visible_text_drops_scripts_and_styles() -> None:
@@ -144,12 +147,12 @@ def test_a_sitemap_bomb_in_a_run_is_an_unreadable_file(monkeypatch: pytest.Monke
     ],
 )
 def test_a_hostile_bundle_or_state_is_read_in_linear_time(body: str) -> None:
-    began = time.monotonic()
+    began = time.process_time()
     routes_in(body)
     helpers_in(body)
     api_bases(f"<script>{body}</script>")
     read_state(body)
-    assert time.monotonic() - began < 5.0
+    assert time.process_time() - began < CPU_MOST
 
 
 def test_a_state_of_a_thousand_levels_is_read() -> None:
