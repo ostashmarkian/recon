@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 - 2026-11-16
 
 From building scrapers for two electronics marketplaces on one Alibaba Cloud API, where the page size, the depth
 of the pages, the terms' pace and a silent refusal were all found by hand:
